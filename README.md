@@ -6,19 +6,19 @@
 
 <table>
 <tr>
+<td width="50%"><img src="docs/images/app-briefing.png" alt="자동 브리핑 화면"></td>
 <td width="50%"><img src="docs/images/app-documents.png" alt="문서 인식 화면"></td>
-<td width="50%"><img src="docs/images/app-convert.png" alt="형식 변환 화면"></td>
 </tr>
 <tr>
+<td align="center"><sub><b>자동 브리핑</b> — 수집·분류·저장·언로드가 네 단계로 보이고, <b>켜지 않으면 스스로 시작하지 않습니다</b></sub></td>
 <td align="center"><sub><b>문서 인식</b> — 강의 슬라이드 사진과 스캔 PDF를 글자로. 이미지가 이 Mac을 벗어나지 않습니다</sub></td>
-<td align="center"><sub><b>형식 변환</b> — 사진·오디오·영상·문서를 다른 형식으로. 한글 문서(HWP·HWPX)도 읽습니다</sub></td>
 </tr>
 <tr>
-<td width="50%"><img src="docs/images/app-pdf.png" alt="PDF 편집 화면"></td>
+<td width="50%"><img src="docs/images/app-convert.png" alt="형식 변환 화면"></td>
 <td width="50%"><img src="docs/images/app-print.png" alt="프린트 화면"></td>
 </tr>
 <tr>
-<td align="center"><sub><b>PDF 편집</b> — 합치고 나누고 쪽을 정리하고, 암호와 서명을 얹습니다</sub></td>
+<td align="center"><sub><b>형식 변환</b> — 사진·오디오·영상·문서를 다른 형식으로. 한글 문서(HWP·HWPX)도 읽습니다</sub></td>
 <td align="center"><sub><b>프린트</b> — 설정하지 않으면 이렇게 아무것도 하지 않습니다. 나머지 기능에는 영향이 없습니다</sub></td>
 </tr>
 </table>
