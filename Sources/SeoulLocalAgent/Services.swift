@@ -139,6 +139,19 @@ final class ActiveProcessRegistry: @unchecked Sendable {
     }
 }
 
+/// Slack 읽기 토큰이 Keychain에 놓이는 자리.
+///
+/// 이름을 한 곳에 두는 이유는 등록 명령과 읽는 코드가 **반드시 같은 문자열**이어야 하기
+/// 때문이다. 안내 문구에 적힌 이름과 실제로 읽는 이름이 한 글자라도 다르면, 사용자는
+/// 시키는 대로 했는데도 계속 "토큰이 없습니다"를 보게 된다.
+enum SlackCredential {
+    static let service = "kr.ac.snu.local-agent.slack"
+    static let account = "read-token"
+    /// 값을 인자로 받지 않아야 셸 기록에 토큰이 남지 않는다 — `-w`만 두면 화면에
+    /// 보이지 않게 입력받는다.
+    static let registerCommand = "security add-generic-password -U -s \(service) -a \(account) -w"
+}
+
 enum AppConfig {
     /// Official Qwen3.6 MoE (35B total, 3B active) in Apple Silicon MLX form.
     /// Measured against the creative-writing 27B merge this replaced, on the same
@@ -824,7 +837,7 @@ struct SlackSource {
     private let session = URLSession.shared
 
     func collect(since: Date) async throws -> SourceHarvest {
-        let token = try Keychain.string(service: "com.openclaw.slack.bot-token", account: "openclaw-local")
+        let token = try Keychain.string(service: SlackCredential.service, account: SlackCredential.account)
         let mentionUserID = AppConfig.slackMentionUserID
         let teamID = try await workspaceID(token: token)
         let conversations = try await allConversations(token: token)

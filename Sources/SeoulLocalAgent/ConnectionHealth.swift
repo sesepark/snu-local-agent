@@ -147,13 +147,13 @@ enum ConnectionProbe {
     static func slack() async -> ConnectionCheck {
         let token: String
         do {
-            token = try Keychain.string(service: "com.openclaw.slack.bot-token", account: "openclaw-local")
+            token = try Keychain.string(service: SlackCredential.service, account: SlackCredential.account)
         } catch {
             return ConnectionCheck(
                 id: slackID, title: "Slack", symbol: "bubble.left.and.bubble.right", state: .warning,
                 summary: "Keychain에 토큰이 없습니다.",
                 detail: "토큰이 없으면 브리핑에서 Slack은 실패로 기록되고 다른 소스만 수집됩니다.",
-                remedy: .copyCommand("security add-generic-password -s com.openclaw.slack.bot-token -a openclaw-local -w <토큰>")
+                remedy: .copyCommand(SlackCredential.registerCommand)
             )
         }
         var request = URLRequest(url: URL(string: "https://slack.com/api/auth.test")!)
