@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>서울대 로컬 에이전트 — 데모</title>
+<meta name="description" content="메일·학교 공지·일정을 오늘 할 일로 정리하는 맥 앱. 전부 기기 안에서 돕니다.">
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 48px 20px 80px;
+    background: #0b0d10; color: #e9ecf1;
+    font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo",
+          "Pretendard", "Noto Sans KR", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  main { max-width: 980px; margin: 0 auto; }
+  h1 { margin: 0 0 10px; font-size: 34px; font-weight: 700; letter-spacing: -0.02em; }
+  .lede { margin: 0 0 6px; color: #9aa4b2; font-size: 17px; }
+  .sub { margin: 0 0 32px; color: #6b7482; font-size: 14px; }
+  video {
+    width: 100%; display: block; border-radius: 14px;
+    background: #000; box-shadow: 0 18px 48px rgba(0,0,0,.55);
+  }
+  .caption { margin: 14px 2px 0; color: #6b7482; font-size: 13.5px; }
+  .row { display: flex; flex-wrap: wrap; gap: 12px; margin: 34px 0 0; }
+  a.btn {
+    display: inline-block; padding: 12px 20px; border-radius: 10px;
+    text-decoration: none; font-weight: 600; font-size: 15px;
+    border: 1px solid #2a313c; color: #e9ecf1; background: #151a21;
+    transition: background .15s, border-color .15s;
+  }
+  a.btn:hover { background: #1c222b; border-color: #3a4250; }
+  a.btn.primary { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+  a.btn.primary:hover { background: #2b7cf5; }
+  .notes { margin-top: 40px; padding-top: 26px; border-top: 1px solid #1c2027; color: #8b95a3; font-size: 14.5px; }
+  .notes b { color: #cbd3dd; font-weight: 600; }
+  .notes ul { margin: 12px 0 0; padding-left: 20px; }
+  .notes li { margin: 7px 0; }
+  footer { margin-top: 44px; color: #59616e; font-size: 13px; }
+  @media (max-width: 640px) { body { padding: 30px 16px 60px; } h1 { font-size: 26px; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>서울대 로컬 에이전트</h1>
+  <p class="lede">메일 · 학교 공지 · 일정을 오늘 할 일로. 전부 이 Mac 안에서.</p>
+  <p class="sub">「ChatGPT Edu 활용 상시 공모전」 제출 자료 · 실제 앱을 조작한 화면입니다</p>
+
+  <video controls playsinline preload="metadata" poster="poster.jpg">
+    <source src="demo.mp4" type="video/mp4">
+    이 브라우저는 영상 재생을 지원하지 않습니다.
+    <a href="demo.mp4">파일로 내려받기</a>
+  </video>
+  <p class="caption">59초 · 녹음과 전사 → 인박스 정리 → 브리핑 보관함 → 일정 달력. 분류가 도는 구간만 30배속입니다.</p>
+
+  <div class="row">
+    <a class="btn primary" href="https://github.com/sesepark/snu-local-agent/releases/latest">앱 내려받기 (dmg)</a>
+    <a class="btn" href="https://github.com/sesepark/snu-local-agent">공개 저장소 · 설치와 설정 안내</a>
+    <a class="btn" href="demo.mp4" download>영상 내려받기</a>
+  </div>
+
+  <div class="notes">
+    <b>영상에 나오는 것</b>
+    <ul>
+      <li>앱에서 바로 녹음하고, 한국어 전사가 이 Mac 안에서 끝납니다.</li>
+      <li>메일 두 계정 · 메시지 · 학교 공지 게시판 · eTL을 읽기 전용으로 모읍니다.</li>
+      <li>이 Mac의 모델이 <b>오늘 꼭 할 일</b>과 <b>확인해야 할 것</b>으로 나누고 마감을 뽑습니다.</li>
+      <li>여러 곳에서 나온 마감이 한 달치 달력 한 곳에 모입니다.</li>
+    </ul>
+  </div>
+
+  <footer>Apple Silicon · macOS 26 이상 · MIT</footer>
+</main>
+</body>
+</html>
