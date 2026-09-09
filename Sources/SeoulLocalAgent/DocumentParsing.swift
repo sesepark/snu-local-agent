@@ -13,7 +13,7 @@ import PDFKit
 /// way they crop photos, so paying the model load each time is cheaper than
 /// holding gigabytes for a tab that is idle most of the day.
 struct DocumentParsingService {
-    static let executable = ProjectRoot.resolving(".venv-docparse/bin/mineru")
+    static let executable = ProjectRoot.venv(".venv-docparse/bin/mineru")
     /// Weights live next to the other local models so uninstalling is one folder.
     static let modelCache = NSString(string: "~/.cache/seoul-local-agent/hf").expandingTildeInPath
 

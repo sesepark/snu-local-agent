@@ -8,7 +8,11 @@ set -eu
 
 # 이 스크립트가 놓인 자리에서 구한다. 다른 사람이 어디에 내려받아도 그대로 돈다.
 PROJECT_DIR="${0:A:h:h}"
-VENV="$PROJECT_DIR/.venv-matting"
+# 가상환경은 저장소가 아니라 사용자 폴더에 만든다. `.dmg`로 앱만 받은 사람에게는
+# 저장소가 없고, 서명된 번들 안에는 쓸 수 없기 때문이다.
+VENV_ROOT="$HOME/Library/Application Support/SeoulLocalAgent/venvs"
+/bin/mkdir -p "$VENV_ROOT"
+VENV="$VENV_ROOT/.venv-matting"
 
 cd "$PROJECT_DIR"
 

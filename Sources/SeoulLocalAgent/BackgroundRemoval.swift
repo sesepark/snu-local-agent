@@ -204,8 +204,8 @@ enum VisionSubjectMatting {
 final class MattingDaemon: @unchecked Sendable {
     static let shared = MattingDaemon()
 
-    static let executable = ProjectRoot.resolving(".venv-matting/bin/python")
-    static let runnerScript = ProjectRoot.resolving("scripts/matting_runner.py")
+    static let executable = ProjectRoot.venv(".venv-matting/bin/python")
+    static let runnerScript = ProjectRoot.script("matting_runner.py")
     /// Idle seconds before the runner unloads the weights and exits by itself.
     static let idleTimeout = 300
 

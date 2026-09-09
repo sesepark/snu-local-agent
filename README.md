@@ -63,33 +63,46 @@
 - **[uv](https://docs.astral.sh/uv/)** — 파이썬 도구들의 환경을 만듭니다. `brew install uv`
 - **Xcode 명령줄 도구** — `xcode-select --install`
 
-### 1. 내려받아 빌드하기
+### 1. 받기 — 둘 중 하나
+
+**그냥 쓰려면** — [최신 릴리스](https://github.com/sesepark/snu-local-agent/releases/latest)에서 `SeoulLocalAgent.dmg`를 받아 앱을 `Applications`로 끌어다 놓으세요. 빌드도 `git`도 필요 없습니다.
+
+**고쳐 쓰려면**
 
 ```sh
 git clone https://github.com/sesepark/snu-local-agent.git
 cd snu-local-agent
-./scripts/build-app-bundle.sh
+./scripts/build-app-bundle.sh      # dist/SeoulLocalAgent.app
+./scripts/make-dmg.sh              # dist/SeoulLocalAgent.dmg
 ```
-
-`dist/SeoulLocalAgent.app`이 만들어집니다. 원하는 곳으로 옮겨도 되지만 **저장소 폴더는 지우지 마세요** — 파이썬 도구들이 그 안에 삽니다.
 
 ### 2. 처음 열 때 (Gatekeeper)
 
-이 앱은 Apple에 공증(notarization)을 받지 않았습니다. 유료 개발자 등록이 필요한 절차이고, 학생이 학생에게 나눠 주는 도구에 그것까지 두지는 않았습니다. 그래서 처음 열 때는 **우클릭 → 열기**를 쓰세요. 한 번만 하면 됩니다.
+이 앱은 Apple에 공증(notarization)을 받지 않았습니다. 유료 개발자 등록이 필요한 절차이고, 학생이 학생에게 나눠 주는 도구에 그것까지 두지는 않았습니다. 그래서 처음 열 때는 두 번 누르지 말고 **우클릭 → 열기**를 쓰세요. 한 번만 하면 그다음부터는 평소처럼 열립니다.
 
-> 그래도 열리지 않으면: `xattr -dr com.apple.quarantine dist/SeoulLocalAgent.app`
+> 그래도 열리지 않으면: `xattr -dr com.apple.quarantine /Applications/SeoulLocalAgent.app`
 
 ### 3. 쓰고 싶은 도구만 골라 준비하기
 
 각각 독립이라 **필요한 것만** 돌리면 됩니다.
 
 ```sh
+brew install uv
+
 ./scripts/setup-transcription-env.sh   # 녹음·전사, 전역 받아쓰기
 ./scripts/setup-matting-env.sh         # 누끼 따기
 ./scripts/setup-media-env.sh           # 소리 다듬기, 화질 올리기
 ./scripts/setup-docparse-env.sh        # 문서 인식 `정밀`
 ./scripts/setup-hwp.sh                 # 한글 문서를 서식째 변환
 ```
+
+`.dmg`로 받았다면 저장소가 없으므로 앱 안의 같은 스크립트를 부르면 됩니다.
+
+```sh
+/Applications/SeoulLocalAgent.app/Contents/Resources/scripts/setup-transcription-env.sh
+```
+
+가상환경은 앱 번들이 아니라 `~/Library/Application Support/SeoulLocalAgent/venvs/`에 만들어집니다. 서명된 번들 안에는 쓸 수 없기 때문입니다.
 
 ---
 

@@ -20,6 +20,12 @@ for size in 16 32 128 256 512; do
   /usr/bin/sips -z "$((size * 2))" "$((size * 2))" "$PROJECT_DIR/Assets/SeoulUniversityLogo.png" --out "$ICONSET/icon_${size}x${size}@2x.png" >/dev/null
 done
 /usr/bin/iconutil -c icns "$ICONSET" -o "$APP_DIR/Contents/Resources/SeoulLocalAgent.icns"
+# 러너와 설치 스크립트를 번들 안에 함께 넣는다. `.dmg`로 앱만 받은 사람에게는
+# 체크아웃이 없고, 전사·누끼·미디어·문서 인식은 이 파일들 없이는 돌지 않는다.
+/bin/mkdir -p "$APP_DIR/Contents/Resources/scripts"
+/bin/cp "$PROJECT_DIR/scripts/"*_runner.py "$APP_DIR/Contents/Resources/scripts/"
+/bin/cp "$PROJECT_DIR/scripts/setup-"*.sh "$APP_DIR/Contents/Resources/scripts/"
+/bin/chmod +x "$APP_DIR/Contents/Resources/scripts/"*.sh
 /bin/cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -33,13 +39,10 @@ done
   <key>NSCalendarsFullAccessUsageDescription</key><string>인박스 정리에 앞으로의 일정을 포함하고, 브리핑 보관함에서 고른 항목만 '서울대 로컬 에이전트' 전용 캘린더에 넣기 위해 캘린더에 접근합니다.</string>
   <key>NSRemindersFullAccessUsageDescription</key><string>브리핑 보관함에서 고른 항목을 '서울대 로컬 에이전트' 전용 목록에 미리 알림으로 넣기 위해 접근합니다.</string>
   <key>NSHighResolutionCapable</key><true/>
-  <!-- The SO-ARM console is reached over an SSH tunnel to 127.0.0.1 and speaks
-       plain HTTP; ATS would otherwise block both the status polling and the
-       embedded web console. This permits loopback and local networking only. -->
-  <!-- The robot console runs on a machine on the home LAN and is reached by an
-       SSH tunnel, so macOS asks for local-network access the first time. Without
-       this string the prompt cannot say what the app wants it for. -->
-  <key>NSLocalNetworkUsageDescription</key><string>집 서버의 SO-ARM101 콘솔에 SSH 터널로 연결하기 위해 같은 네트워크의 그 서버에만 접속합니다. 다른 기기를 찾거나 수집하지 않습니다.</string>
+  <!-- The print server sits on the home LAN and is reached over SSH, so macOS
+       asks for local-network access the first time. Without this string the
+       prompt cannot say what the app wants it for. -->
+  <key>NSLocalNetworkUsageDescription</key><string>설정에 적어 둔 집 서버의 프린터로 인쇄를 보내기 위해 같은 네트워크의 그 서버에만 접속합니다. 다른 기기를 찾거나 수집하지 않습니다.</string>
   <key>NSAppTransportSecurity</key><dict>
     <key>NSAllowsLocalNetworking</key><true/>
   </dict>
