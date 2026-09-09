@@ -1,0 +1,85 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  html, body { margin: 0; padding: 0; background: #000; overflow: hidden; height: 100%; }
+  #player { width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<div id="player"></div>
+<script>
+// YouTube가 공식으로 제공하는 IFrame Player API 하나만 쓴다. 광고를 건드리거나
+// 스트림을 꺼내는 코드는 없다 — 이 페이지는 플레이어를 만들고, 앱이 보낸 명령을
+// 그대로 전달하고, 상태를 앱에 돌려줄 뿐이다.
+var player = null;
+var pending = null;
+var ticker = null;
+
+function post(payload) {
+  try { window.webkit.messageHandlers.music.postMessage(payload); } catch (e) {}
+}
+
+function tick() {
+  if (!player || !player.getCurrentTime) return;
+  var time = player.getCurrentTime() || 0;
+  var duration = player.getDuration() || 0;
+  post({ type: 'time', time: time, duration: duration });
+}
+
+window.onYouTubeIframeAPIReady = function () {
+  player = new YT.Player('player', {
+    height: '100%',
+    width: '100%',
+    playerVars: {
+      playsinline: 1,
+      rel: 0,
+      // 관련 영상과 주석은 음악을 듣는 데 방해가 된다. 컨트롤은 남긴다 —
+      // 플레이어를 가리거나 조작을 막는 것은 임베드 규정에 어긋난다.
+      iv_load_policy: 3,
+      controls: 1,
+      origin: location.origin
+    },
+    events: {
+      onReady: function () {
+        post({ type: 'ready' });
+        if (ticker) clearInterval(ticker);
+        ticker = setInterval(tick, 250);
+        if (pending) { var p = pending; pending = null; loadVideo(p.id, p.start); }
+      },
+      onStateChange: function (event) {
+        post({ type: 'state', state: event.data });
+        tick();
+      },
+      onError: function (event) {
+        post({ type: 'error', code: event.data });
+      }
+    }
+  });
+};
+
+function loadVideo(id, start) {
+  if (!player || !player.loadVideoById) { pending = { id: id, start: start }; return; }
+  player.loadVideoById({ videoId: id, startSeconds: start || 0 });
+}
+
+function command(name, argument) {
+  if (!player) return;
+  switch (name) {
+    case 'play': if (player.playVideo) player.playVideo(); break;
+    case 'pause': if (player.pauseVideo) player.pauseVideo(); break;
+    case 'stop': if (player.stopVideo) player.stopVideo(); break;
+    case 'seek': if (player.seekTo) player.seekTo(argument, true); break;
+    case 'volume': if (player.setVolume) player.setVolume(Math.round(argument * 100)); break;
+  }
+}
+
+var tag = document.createElement('script');
+tag.src = 'https://www.youtube.com/iframe_api';
+tag.onerror = function () { post({ type: 'failed', message: 'YouTube 플레이어를 불러오지 못했습니다' }); };
+document.head.appendChild(tag);
+</script>
+</body>
+</html>

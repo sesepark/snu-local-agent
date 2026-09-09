@@ -1,0 +1,30 @@
+# Swift 빌드 산출물
+.build/
+dist/
+*.xcodeproj
+
+# 기능별 Python 가상환경 (setup 스크립트가 재생성)
+.venv-*/
+.venv/
+__pycache__/
+*.py[cod]
+
+# 캐시
+.ruff_cache/
+.pytest_cache/
+.serena/
+node_modules/
+
+# 로컬 상태·모델·자격증명
+openclaw-workspace-state.json
+*.key
+*.pem
+.DS_Store
+
+# 토큰 카운팅 툴 로컬 캐시
+.tokensave/
+
+# 개인 설정 — 이 앱이 만들어 쓰는 것이지 저장소가 들고 다닐 것이 아니다.
+gmail-accounts.json
+soarm-console.json
+home-server.json
