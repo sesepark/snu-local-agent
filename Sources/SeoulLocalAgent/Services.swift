@@ -960,10 +960,6 @@ struct SlackSource {
     }
 }
 
-private struct OllamaResponse: Decodable {
-    let response: String?
-    let error: String?
-}
 private struct ClassificationEnvelope: Decodable { let items: [ClassificationResult] }
 private struct ClassificationResult: Decodable {
     /// Optional on purpose: a model can drop the field even though the schema
@@ -1085,44 +1081,23 @@ struct LocalClassifier {
                 ],
                 "required": ["items"],
             ]
-            let payload: [String: Any] = [
-                "model": AppConfig.model, "system": systemPrompt,
-                "prompt": String(decoding: promptData, as: UTF8.self), "stream": false, "think": false,
-                "format": format, "keep_alive": "5m", "options": [
-                    "num_ctx": 16384, "temperature": 0.1, "top_p": 0.8,
-                    // Two more fields per item, and they carry the whole report now.
-                    // A six-item batch measured about 1,300 tokens before the
-                    // summaries were given a length floor and about 1,600 after;
-                    // real notice mail runs longer than the fixtures. This is a
-                    // ceiling, not a target, and hitting it truncates the JSON —
-                    // the items after the cut vanish from the answer and reach
-                    // the reader as "원문을 확인해 주세요." with nothing else. Cheap
-                    // to raise, expensive to hit.
-                    "top_k": 20, "repeat_penalty": 1.0, "num_predict": 4_500,
-                ],
-            ]
-            var request = URLRequest(url: AppConfig.ollamaURL.appending(path: "api/generate"))
-            request.httpMethod = "POST"
-            request.timeoutInterval = 600
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.httpBody = try JSONSerialization.data(withJSONObject: payload)
-            let (data, httpResponse) = try await requestWithRetry(request)
-            guard let http = httpResponse as? HTTPURLResponse, 200..<300 ~= http.statusCode else {
-                // Ollama says exactly what is wrong — `{"error":"model '…' not
-                // found"}` on a 404 — and this used to throw that away and hand
-                // the reader the four words "로컬 모델 HTTP 오류" instead, which
-                // is a dead end for anyone who has not pulled the model yet.
-                throw AgentError.processFailed(Self.modelFailure(status: (httpResponse as? HTTPURLResponse)?.statusCode, body: data))
-            }
-            let response: OllamaResponse
-            do {
-                response = try JSONDecoder().decode(OllamaResponse.self, from: data)
-            } catch {
-                throw AgentError.processFailed("로컬 모델 API 응답 형식 오류 (\(batchLabel))")
-            }
-            if let error = response.error { throw AgentError.processFailed("로컬 모델 오류: \(error)") }
-            guard let rawOutput = response.response, let json = Self.extractJSONObject(from: rawOutput) else {
-                throw AgentError.processFailed("로컬 모델이 분류 JSON을 반환하지 않았습니다 (\(batchLabel)).")
+            let rawOutput = try await StructuredInference.generateJSON(
+                system: systemPrompt,
+                prompt: String(decoding: promptData, as: UTF8.self),
+                schema: format,
+                // Two more fields per item, and they carry the whole report now.
+                // A six-item batch measured about 1,300 tokens before the
+                // summaries were given a length floor and about 1,600 after;
+                // real notice mail runs longer than the fixtures. This is a
+                // ceiling, not a target, and hitting it truncates the JSON —
+                // the items after the cut vanish from the answer and reach
+                // the reader as "원문을 확인해 주세요." with nothing else. Cheap
+                // to raise, expensive to hit.
+                maxTokens: 4_500,
+                label: batchLabel
+            )
+            guard let json = Self.extractJSONObject(from: rawOutput) else {
+                throw AgentError.processFailed("\(InferenceSettings.backend.noun)이 분류 JSON을 반환하지 않았습니다 (\(batchLabel)).")
             }
             let decoded: ClassificationEnvelope
             do {
@@ -1183,7 +1158,9 @@ struct LocalClassifier {
         )
     }
 
+    /// 원격 API에는 내릴 것이 없다. 메모리를 쥐고 있는 것은 이 Mac의 Ollama뿐이다.
     func unload() async {
+        guard InferenceSettings.backend == .local else { return }
         await Task.detached {
             let payload: [String: Any] = ["model": AppConfig.model, "keep_alive": 0]
             var request = URLRequest(url: AppConfig.ollamaURL.appending(path: "api/generate"))
@@ -1193,26 +1170,6 @@ struct LocalClassifier {
             request.timeoutInterval = 30
             _ = try? await Self.inferenceSession.data(for: request)
         }.value
-    }
-
-    private func requestWithRetry(_ request: URLRequest) async throws -> (Data, URLResponse) {
-        var lastError: Error?
-        for attempt in 1...2 {
-            do { return try await Self.inferenceSession.data(for: request) }
-            catch is CancellationError { throw CancellationError() }
-            catch {
-                lastError = error
-                if attempt == 1 { try await Task.sleep(for: .milliseconds(350)) }
-            }
-        }
-        // "Could not connect to the server." names neither the server nor the
-        // thing to start, and it is the first message anyone sees who has not
-        // launched Ollama yet.
-        if let urlError = lastError as? URLError,
-           [.cannotConnectToHost, .networkConnectionLost, .cannotFindHost, .timedOut].contains(urlError.code) {
-            throw AgentError.processFailed("Ollama에 연결하지 못했습니다 (\(AppConfig.ollamaURL.absoluteString)). 터미널에서 `ollama serve`로 실행 중인지 확인해 주세요.")
-        }
-        throw lastError ?? AgentError.processFailed("로컬 모델 요청 실패")
     }
 
     private static func extractJSONObject(from text: String) -> String? {

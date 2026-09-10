@@ -3181,20 +3181,10 @@ private struct BriefingSettingsTab: View {
     private static let webNoticeSiteCount = WebNoticeConfiguration.load().filter(\.enabled).count
     @ObservedObject var controller: AutomationController
     @AppStorage("slackMentionUserID") private var slackMentionUserID = ""
-    /// 비워 두면 기계를 따라간다. 이름을 적으면 그 선택이 이긴다.
-    @AppStorage("preferredLocalModel") private var preferredLocalModel = ""
 
     var body: some View {
         Form {
-            Section("로컬 모델") {
-                LabeledContent("이 Mac", value: MachineCapability.current.summary)
-                    .font(.caption)
-                LabeledContent("지금 쓰는 모델", value: AppConfig.model)
-                    .font(.caption)
-                TextField("직접 지정", text: $preferredLocalModel, prompt: Text("비워 두면 이 Mac에 맞춰 고릅니다"))
-                Text("가중치가 물리 메모리의 절반을 넘으면 실패하는 대신 **조용히 느려지기만** 하므로, 기본값은 그 선을 넘지 않는 가장 큰 모델입니다. 여기에 Ollama 태그를 적으면 그 판단을 덮어씁니다 — 받아 두지 않은 이름을 적으면 브리핑이 시작할 때 그렇게 말합니다.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
+            InferenceLocationSection()
             Section("수집") {
                 Picker("수집 범위", selection: $controller.selectedRange) {
                     ForEach(CollectionRange.allCases) { Text($0.rawValue).tag($0) }

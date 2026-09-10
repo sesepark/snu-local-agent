@@ -37,6 +37,20 @@ enum LocalModelCatalog {
     /// appears here.
     static let entries: [Entry] = [qwen36, qwen3, gptOSS]
 
+    /// 국산 모델. 자동 선택 목록에는 넣지 않는다 — 위 세 개는 전부 MoE라 같은 메모리에서
+    /// 몇 배 빠르고, EXAONE은 조밀(dense) 모델이라 자동으로 고르면 느려진 이유를 사용자가
+    /// 알 수 없다. 대신 설정에서 한 번 눌러 고를 수 있게 따로 둔다. 한국어 공지와 메일이
+    /// 입력의 대부분이라, 한국어로 학습된 모델을 쓰고 싶다는 선택은 근거가 있다.
+    static let exaone78 = Entry(tag: "exaone3.5:7.8b", gigabytes: 4.8,
+                                summary: "LG AI Research의 한국어·영어 모델. 16GB 맥에서도 돕니다.")
+    static let exaone32 = Entry(tag: "exaone3.5:32b", gigabytes: 19.0,
+                                summary: "같은 계열의 큰 쪽. 48GB 이상에서 권합니다.")
+    static let exaone24 = Entry(tag: "exaone3.5:2.4b", gigabytes: 1.6,
+                                summary: "가장 작은 국산 선택. 8GB 맥의 마지막 수단입니다.")
+
+    /// 큰 것부터. 화면은 이 순서대로 보여 주고, 맞지 않는 것은 흐리게 둔다.
+    static let koreanEntries: [Entry] = [exaone32, exaone78, exaone24]
+
     /// Named when nothing fits. The app will not run it on such a machine, but the
     /// readiness screen still needs something concrete to talk about.
     static var smallest: Entry { gptOSS }
@@ -48,7 +62,7 @@ enum LocalModelCatalog {
     }
 
     static func entry(tagged tag: String) -> Entry? {
-        entries.first { $0.tag == tag }
+        (entries + koreanEntries).first { $0.tag == tag }
     }
 }
 

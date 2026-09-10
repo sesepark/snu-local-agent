@@ -273,12 +273,69 @@ enum ConnectionProbe {
         }
     }
 
+    // MARK: - API 모델
+
+    /// 주소·키·모델 이름 중 무엇이 빠졌는지를 먼저 말하고, 다 있으면 실제로 한 번
+    /// 물어본다. `/models`를 내지 않는 게이트웨이도 있으므로 그 실패는 경고까지만이다 —
+    /// 분류는 `/chat/completions`로 하고, 그쪽이 되는지는 여기서 알 수 없다.
+    static func remoteModel() async -> ConnectionCheck {
+        let title = "판단 모델 (API)"
+        if let problem = InferenceSettings.remoteConfigurationProblem() {
+            return ConnectionCheck(
+                id: modelID, title: title, symbol: "cloud", state: .failed,
+                summary: "API 설정이 아직 끝나지 않았습니다.", detail: problem
+            )
+        }
+        guard let base = URL(string: InferenceSettings.baseURL) else {
+            return ConnectionCheck(id: modelID, title: title, symbol: "cloud", state: .failed,
+                                   summary: "API 주소 형식이 올바르지 않습니다.",
+                                   detail: InferenceSettings.baseURL)
+        }
+        var request = URLRequest(url: base.appending(path: "models"))
+        request.timeoutInterval = 15
+        request.setValue("Bearer \(InferenceSettings.apiKey ?? "")", forHTTPHeaderField: "Authorization")
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            guard 200..<300 ~= status else {
+                let state: ConnectionCheck.State = (status == 401 || status == 403) ? .failed : .warning
+                return ConnectionCheck(
+                    id: modelID, title: title, symbol: "cloud", state: state,
+                    summary: state == .failed ? "API 키가 거부되었습니다." : "모델 목록을 읽지 못했습니다 (HTTP \(status)).",
+                    detail: StructuredInference.remoteFailure(status: status, body: data)
+                )
+            }
+            let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            let names = ((root?["data"] as? [[String: Any]]) ?? []).compactMap { $0["id"] as? String }
+            let wanted = InferenceSettings.remoteModel
+            if !names.isEmpty, !names.contains(wanted) {
+                return ConnectionCheck(
+                    id: modelID, title: title, symbol: "cloud", state: .warning,
+                    summary: "\(wanted)이 목록에 없습니다.",
+                    detail: "이 키로 쓸 수 있는 모델: \(names.prefix(6).joined(separator: ", "))"
+                )
+            }
+            return ConnectionCheck(
+                id: modelID, title: title, symbol: "cloud", state: .ok,
+                summary: "\(wanted) 준비됨.",
+                detail: "분류는 \(InferenceSettings.baseURL)로 전송됩니다. 파일 변환·전사·문서 인식은 계속 이 Mac 안에서만 처리됩니다."
+            )
+        } catch {
+            return ConnectionCheck(
+                id: modelID, title: title, symbol: "cloud", state: .failed,
+                summary: "API에 연결하지 못했습니다.",
+                detail: "\(InferenceSettings.baseURL) — \(error.localizedDescription)"
+            )
+        }
+    }
+
     // MARK: - 로컬 모델
 
     /// Both halves matter and they fail differently: Ollama not running is a
     /// connection error, while a model that was never pulled is a 404 that used
     /// to reach the user as the bare words "로컬 모델 HTTP 오류".
     static func model() async -> ConnectionCheck {
+        if InferenceSettings.backend == .remote { return await remoteModel() }
         let machine = MachineCapability.current
         // Said before Ollama is even contacted, because on such a machine a green
         // "준비됨" would be the wrong answer even if the model were installed: the

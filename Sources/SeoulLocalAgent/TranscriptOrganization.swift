@@ -119,6 +119,7 @@ struct TranscriptOrganizer {
     }
 
     func unload() async {
+        guard InferenceSettings.backend == .local else { return }
         await Task.detached {
             let body: [String: Any] = ["model": AppConfig.model, "keep_alive": 0]
             var request = URLRequest(url: AppConfig.ollamaURL.appending(path: "api/generate"))
@@ -199,26 +200,11 @@ struct TranscriptOrganizer {
     }
 
     private func generate(system: String, input: String, prediction: Int) async throws -> String {
-        let payload: [String: Any] = [
-            "model": AppConfig.model, "system": system, "prompt": input, "stream": false, "think": false,
-            "keep_alive": "5m", "options": [
-                "num_ctx": 32_768, "temperature": 0.1, "top_p": 0.8, "top_k": 20,
-                "repeat_penalty": 1.0, "num_predict": prediction,
-            ],
-        ]
-        var request = URLRequest(url: AppConfig.ollamaURL.appending(path: "api/generate"))
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONSerialization.data(withJSONObject: payload)
-        let (data, response) = try await Self.session.data(for: request)
-        guard let http = response as? HTTPURLResponse, 200..<300 ~= http.statusCode else {
-            throw AgentError.processFailed("로컬 모델 전사 정리 HTTP 오류")
-        }
-        struct Response: Decodable { let response: String?; let error: String? }
-        let decoded = try JSONDecoder().decode(Response.self, from: data)
-        if let error = decoded.error { throw AgentError.processFailed("로컬 모델 전사 정리 오류: \(error)") }
-        guard let output = decoded.response?.trimmingCharacters(in: .whitespacesAndNewlines), !output.isEmpty else {
-            throw AgentError.processFailed("로컬 모델이 전사 정리 결과를 반환하지 않았습니다.")
+        let output = try await StructuredInference.generateText(
+            system: system, prompt: input, maxTokens: prediction, label: "전사 정리"
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !output.isEmpty else {
+            throw AgentError.processFailed("\(InferenceSettings.backend.noun)이 전사 정리 결과를 반환하지 않았습니다.")
         }
         return output
     }
