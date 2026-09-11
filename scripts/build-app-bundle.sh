@@ -47,8 +47,8 @@ done
     <key>NSAllowsLocalNetworking</key><true/>
   </dict>
   <key>LSMinimumSystemVersion</key><string>26.0</string>
-  <key>CFBundleShortVersionString</key><string>1.0</string>
-  <key>CFBundleVersion</key><string>1</string>
+  <key>CFBundleShortVersionString</key><string>1.1</string>
+  <key>CFBundleVersion</key><string>2</string>
 </dict></plist>
 PLIST
 /usr/bin/codesign --force --sign - "$APP_DIR"
