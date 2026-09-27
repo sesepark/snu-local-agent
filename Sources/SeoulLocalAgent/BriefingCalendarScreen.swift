@@ -27,7 +27,7 @@ struct BriefingCalendarView: View {
     private var model: BriefingArchiveModel { controller.briefingArchive }
 
     /// 화면을 눌러 보지 않고도 펼친 모양을 확인할 수 있게 하는 점검용 인자.
-    /// `--music-query`와 같은 자리의 것이다 — 눌러야만 볼 수 있는
+    /// `--soarm-preview`·`--music-query`와 같은 자리의 것이다 — 눌러야만 볼 수 있는
     /// 상태는 그 길이 없으면 화면 캡처로 확인할 수가 없다.
     private static let expandsOnLaunch = CommandLine.arguments.contains("--calendar-expand")
     private static var calendar: Calendar { KoreanDeadline.calendar }
@@ -282,6 +282,7 @@ struct BriefingCalendarView: View {
         if item.isDone { return .secondary }
         if item.entry.bucket == .other { return Color.secondary.opacity(0.6) }
         if item.isLate() { return .orange }
+        if item.kind == .classEvent { return .snuBlueLabel }
         return item.kind == .scheduled ? .secondary : .snuBlueLabel
     }
 
@@ -357,7 +358,10 @@ struct BriefingCalendarView: View {
                 // 원문에 적힌 마감은 **위 줄과 다를 때만** 보여 준다. 같은 값을 두 번
                 // 적으면 한 줄이 늘어나는 만큼 읽을 것이 줄어든다 — `마감 11:00` 아래에
                 // `적힌 마감: 9월 3일 11시 00분`은 새로 말해 주는 것이 없다.
-                if item.kind == .deadline, let deadline = item.entry.deadlineText, deadline != Self.sameDayText(item) {
+                // eTL에서 온 줄에는 적지 않는다. 그 날짜는 본문에서 읽어 낸 것이 아니라
+                // API가 `due_at`으로 준 시각 그대로여서, 다시 적어도 새로 말해 주는 것이 없다.
+                if item.kind == .deadline, !item.isFromETL,
+                   let deadline = item.entry.deadlineText, deadline != Self.sameDayText(item) {
                     Text("적힌 마감: \(deadline)").font(.caption).foregroundStyle(.tertiary)
                 }
             }
@@ -402,8 +406,11 @@ struct BriefingCalendarView: View {
             // `마감 11:00`이라고 적어 놓고 아래에 다시 `9월 3일 11시 00분`을 적으면
             // 한 줄이 늘어나는 만큼 읽을 것이 줄어든다. 사람이 넘긴 일정(`일정`) 줄에서는
             // 마감이 다른 날일 수 있으므로 그때는 새로운 정보다.
+            // eTL 줄에서 마감을 빼는 것은 **이 줄이 이미 그 시각을 말하고 있을 때**뿐이다.
+            // 사람이 금요일 마감을 수요일 미리 알림으로 넘겼다면 이 줄은 수요일을 말하고
+            // 있으므로, 금요일은 화면 어디에도 없어서는 안 되는 새 정보다.
             if let deadline = entry.deadlineText,
-               item.kind == .scheduled || deadline != Self.sameDayText(item) {
+               item.kind == .scheduled || (!item.isFromETL && deadline != Self.sameDayText(item)) {
                 BriefingField(label: "마감", value: deadline)
             }
             if let placement = entry.placement {
@@ -461,13 +468,21 @@ struct BriefingCalendarView: View {
                         .controlSize(.small)
                 }
 
-                Button("보관함에서 보기", systemImage: "checklist") {
-                    model.revealInArchive(item)
-                    controller.section = .archive
+                // 브리핑에 실린 적 없는 eTL 줄에는 열어 볼 그날이 없다. 단추를 남겨 두면
+                // 빈 날을 여는 단추가 된다.
+                if !item.entry.isLiveOnly {
+                    Button("보관함에서 보기", systemImage: "checklist") {
+                        model.revealInArchive(item)
+                        controller.section = .archive
+                    }
+                    .buttonStyle(.borderless)
+                    .controlSize(.small)
+                    .help("분류를 옮기거나 메모를 남기려면 보관함에서 엽니다")
+                } else {
+                    Text("eTL이 알려 준 일정이라 아직 브리핑에 실리지 않았습니다.")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
                 }
-                .buttonStyle(.borderless)
-                .controlSize(.small)
-                .help("분류를 옮기거나 메모를 남기려면 보관함에서 엽니다")
 
                 Spacer(minLength: 0)
             }

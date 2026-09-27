@@ -72,6 +72,8 @@ enum WebNoticeCatalog {
         programs("음악대학", "https://music.snu.ac.kr/notice"),
         programs("간호대학", "https://nursing.snu.ac.kr/board/notice"),
         site("공과대학", "https://eng.snu.ac.kr/communication/notice/notice"),
+        site("데이터사이언스대학원", "https://gsds.snu.ac.kr/news/news-school/", feed: "https://gsds.snu.ac.kr/news/news-school/feed/"),
+        site("서울대 로보틱스", "https://robotics.snu.ac.kr/", feed: "https://robotics.snu.ac.kr/feed/"),
         programs("자연과학대학", "https://science.snu.ac.kr/news/announcement"),
         // These two link each post through a `javascript:` call rather than a URL,
         // so a scraped entry would carry no address to open. Disabled until the
@@ -101,6 +103,45 @@ struct WebNoticeConfiguration: Codable {
     static let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         .appending(path: "SeoulLocalAgent/web-notices.json")
 
+    /// Turns the fields from 설정 › 브리핑 into a board only after both addresses
+    /// are known to be fetchable web URLs. Keeping this outside the view makes the
+    /// same rules available to tests and prevents a malformed value from reaching
+    /// `URLSession` merely because `URL(string:)` accepted it.
+    static func site(
+        name: String,
+        pageAddress: String,
+        feedAddress: String,
+        interest: WebNoticeInterest = .direct
+    ) throws -> WebNoticeSite {
+        let cleanName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanName.isEmpty else { throw WebNoticeConfigurationError.missingName }
+        let page = try webURL(pageAddress, field: "게시판 주소")
+        let cleanFeed = feedAddress.trimmingCharacters(in: .whitespacesAndNewlines)
+        let feed = cleanFeed.isEmpty ? nil : try webURL(cleanFeed, field: "RSS/Atom 주소")
+        return WebNoticeSite(name: cleanName, url: page, feed: feed, interest: interest)
+    }
+
+    static func save(_ sites: [WebNoticeSite], url: URL = Self.url) throws {
+        var seen = Set<String>()
+        guard sites.allSatisfy({ seen.insert($0.id).inserted }) else {
+            throw WebNoticeConfigurationError.duplicateAddress
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try LocalFileStorage.write(try encoder.encode(Self(sites: sites)), to: url)
+    }
+
+    private static func webURL(_ address: String, field: String) throws -> URL {
+        let clean = address.trimmingCharacters(in: .whitespacesAndNewlines)
+        let encoded = clean.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed) ?? clean
+        guard let url = URL(string: encoded),
+              let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme),
+              url.host?.isEmpty == false else {
+            throw WebNoticeConfigurationError.invalidAddress(field)
+        }
+        return url
+    }
+
     /// Writes the catalogue out on first use so the list is discoverable and
     /// editable without touching the app.
     ///
@@ -121,6 +162,20 @@ struct WebNoticeConfiguration: Codable {
         let configuration = Self(sites: WebNoticeCatalog.defaults)
         try? LocalFileStorage.write(try JSONEncoder().encode(configuration), to: url)
         return configuration.sites
+    }
+}
+
+enum WebNoticeConfigurationError: LocalizedError, Equatable {
+    case missingName
+    case invalidAddress(String)
+    case duplicateAddress
+
+    var errorDescription: String? {
+        switch self {
+        case .missingName: "게시판 이름을 입력해 주세요."
+        case .invalidAddress(let field): "\(field)는 http:// 또는 https://로 시작하는 올바른 주소여야 합니다."
+        case .duplicateAddress: "같은 게시판 주소가 이미 목록에 있습니다."
+        }
     }
 }
 
@@ -338,7 +393,12 @@ private final class FeedParser: NSObject, XMLParserDelegate {
     private var inEntry = false
 
     init(data: Data, baseURL: URL) {
-        parser = XMLParser(data: data)
+        // A few WordPress installations print a blank line before the XML
+        // declaration. XMLParser rejects that otherwise valid feed because the
+        // declaration is no longer the first byte, so discard only leading ASCII
+        // whitespace and leave the feed body untouched.
+        let cleanData = Data(data.drop(while: { [9, 10, 13, 32].contains($0) }))
+        parser = XMLParser(data: cleanData)
         self.baseURL = baseURL
         super.init()
         parser.delegate = self

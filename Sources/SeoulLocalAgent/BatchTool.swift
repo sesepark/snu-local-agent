@@ -78,6 +78,7 @@ protocol BatchToolWorker: Sendable {
     var concurrency: Int { get }
     /// The suffix that lands in the saved file name: `강의-다듬음.m4a`.
     var saveSuffix: String { get }
+    var historySettings: String { get }
     func outputExtension(for source: URL) -> String
     func inspect(_ source: URL) async throws -> ToolJobInfo
     func run(
@@ -88,6 +89,7 @@ protocol BatchToolWorker: Sendable {
 }
 
 extension BatchToolWorker {
+    var historySettings: String { saveSuffix }
     var concurrency: Int { max(1, min(4, ProcessInfo.processInfo.activeProcessorCount / 2)) }
 }
 
@@ -136,12 +138,18 @@ struct ToolETA: Sendable {
 // MARK: - 작업 폴더
 
 enum ToolWorkspace {
+    static func rejectionMessage(_ urls: [URL], accepting extensions: Set<String>) -> String? {
+        let rejected = urls.filter { url in
+            var directory: ObjCBool = false
+            if !FileManager.default.fileExists(atPath: url.path, isDirectory: &directory) { return true }
+            return !directory.boolValue && !extensions.contains(url.pathExtension.lowercased())
+        }
+        guard !rejected.isEmpty else { return nil }
+        return "지원하지 않거나 찾을 수 없는 파일 \(rejected.count)개 제외: " + rejected.prefix(3).map(\.lastPathComponent).joined(separator: ", ")
+    }
     /// One folder per tool, so clearing one never disturbs another.
     static func directory(_ name: String) throws -> URL {
-        let directory = FileManager.default.temporaryDirectory
-            .appending(path: "SeoulLocalAgent-\(name)", directoryHint: .isDirectory)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        return directory
+        try ProcessingResults.directory(name)
     }
 
     /// An empty extension means the result is a folder rather than a file —
@@ -156,6 +164,7 @@ enum ToolWorkspace {
     /// count so dropping a home folder by accident cannot hang the app.
     static func expand(_ urls: [URL], accepting extensions: Set<String>, maxDepth: Int = 3, limit: Int = 500) -> (files: [URL], truncated: Bool) {
         var files: [URL] = []
+        var seen = Set<String>()
         var truncated = false
         var queue: [(URL, Int)] = urls.map { ($0, 0) }
         while !queue.isEmpty {
@@ -170,7 +179,7 @@ enum ToolWorkspace {
                 )) ?? []
                 queue.append(contentsOf: children.sorted { $0.lastPathComponent < $1.lastPathComponent }.map { ($0, depth + 1) })
             } else if extensions.contains(url.pathExtension.lowercased()) {
-                files.append(url)
+                if seen.insert(url.resolvingSymlinksInPath().path).inserted { files.append(url) }
             }
         }
         return (files, truncated)
@@ -190,6 +199,7 @@ enum ToolWorkspace {
 @MainActor
 final class BatchToolModel: ObservableObject {
     @Published private(set) var jobs: [ToolJob] = []
+    @Published var selection: Set<ToolJob.ID> = []
     @Published private(set) var isRunning = false
     @Published private(set) var status: String
     @Published private(set) var eta: TimeInterval?
@@ -203,11 +213,15 @@ final class BatchToolModel: ObservableObject {
     private var estimator = ToolETA()
     private var etaUpdatedAt = Date.distantPast
     private var lastWorker: (any BatchToolWorker)?
+    private let history: ToolHistory
+    private let resultDirectory: URL?
 
-    init(name: String, idleStatus: String) {
+    init(name: String, idleStatus: String, history: ToolHistory? = nil, resultDirectory: URL? = nil) {
         self.name = name
         self.idleStatus = idleStatus
         self.status = idleStatus
+        self.history = history ?? .shared
+        self.resultDirectory = resultDirectory
     }
 
     // MARK: 상태
@@ -233,6 +247,7 @@ final class BatchToolModel: ObservableObject {
     }
 
     var hasFinished: Bool { jobs.contains(where: \.isFinished) }
+    var selectedFinishedCount: Int { jobs.filter { selection.contains($0.id) && $0.isFinished }.count }
     var canRerun: Bool { !isRunning && !jobs.isEmpty }
 
     var lastSaveFolder: URL? {
@@ -255,8 +270,9 @@ final class BatchToolModel: ObservableObject {
             error = "이 도구가 다룰 수 있는 파일이 없습니다."
             return
         }
-        error = truncated ? "한 번에 500개까지만 처리합니다. 나머지는 다시 넣어 주세요." : nil
+        error = truncated ? "한 번에 500개까지만 처리합니다. 나머지는 다시 넣어 주세요." : ToolWorkspace.rejectionMessage(urls, accepting: worker.accepts)
         jobs = files.map { ToolJob(source: $0) }
+        selection.removeAll()
         start(worker)
     }
 
@@ -274,6 +290,9 @@ final class BatchToolModel: ObservableObject {
     }
 
     private func start(_ worker: any BatchToolWorker) {
+        // A rerun is a new historical result, not a mutation of the previous one.
+        selection.removeAll()
+        jobs = jobs.map { old in ToolJob(source: old.source) }
         lastWorker = worker
         let total = jobs.count
         estimator = ToolETA()
@@ -285,7 +304,7 @@ final class BatchToolModel: ObservableObject {
             guard let self else { return }
             let directory: URL
             do {
-                directory = try ToolWorkspace.directory(self.name)
+                directory = try self.resultDirectory ?? ToolWorkspace.directory(self.name)
             } catch {
                 self.error = "작업 폴더를 만들지 못했습니다: \(error.localizedDescription)"
                 self.isRunning = false
@@ -348,6 +367,7 @@ final class BatchToolModel: ObservableObject {
             let outcome = try await worker.run(job.source, to: destination) { fraction in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
+                    guard self.jobs.indices.contains(index), self.jobs[index].id == identifier else { return }
                     // Unstructured hops can land after the file has finished;
                     // without the guard a late report flips a done card back to
                     // 처리 중.
@@ -372,10 +392,22 @@ final class BatchToolModel: ObservableObject {
             update(at: index) { $0.state = .failed(Self.message(for: error)) }
             estimator.drop(id: identifier)
         }
+        let completed = jobs[index]
+        history.record(.init(id: completed.id, tool: name, source: completed.source, output: completed.output,
+            saveName: saveName(for: completed), settings: worker.historySettings,
+            detail: "\(completed.detail) · \(completed.statusText)", succeeded: completed.isFinished))
         refreshETA(force: true)
     }
 
     private func finish(total: Int) {
+        for index in jobs.indices {
+            if case .waiting = jobs[index].state { jobs[index].state = .skipped("중단했습니다.") }
+        }
+        history.record(jobs.map { job in
+            .init(id: job.id, tool: name, source: job.source, output: job.output,
+                saveName: saveName(for: job), settings: lastWorker?.historySettings ?? name,
+                detail: "\(job.detail) · \(job.statusText)", succeeded: job.isFinished)
+        })
         let succeeded = jobs.filter(\.isFinished).count
         if Task.isCancelled {
             status = "중단했습니다."
@@ -395,17 +427,38 @@ final class BatchToolModel: ObservableObject {
         task?.cancel()
         // ffmpeg and the Python runners are the only helpers here that live long
         // enough to need chasing.
-        ActiveProcessRegistry.shared.terminateProcesses(containing: "-progress")
+        // Workers already have per-process/request cancellation handlers.
     }
 
     func clear() {
         guard !isRunning else { return }
         jobs = []
+        selection.removeAll()
         error = nil
         status = idleStatus
     }
 
     func report(_ text: String) { status = text }
+
+    func toggleSelection(_ id: ToolJob.ID) {
+        if selection.contains(id) { selection.remove(id) } else { selection.insert(id) }
+    }
+
+    func selectAllFinished() { selection = Set(jobs.filter(\.isFinished).map(\.id)) }
+
+    func clearSelection() { selection.removeAll() }
+
+    /// Removes only generated scratch results and their cards. Source files are
+    /// never touched; every selected item can be recreated by running it again.
+    func deleteSelected() {
+        guard !isRunning, !selection.isEmpty else { return }
+        let removing = jobs.filter { selection.contains($0.id) }
+        for output in removing.compactMap(\.output) { try? FileManager.default.removeItem(at: output) }
+        jobs.removeAll { selection.contains($0.id) }
+        let count = selection.count
+        selection.removeAll()
+        status = "선택한 \(count)개 결과를 삭제했습니다. 원본은 그대로입니다."
+    }
 
     private func update(at index: Int, _ change: (inout ToolJob) -> Void) {
         guard jobs.indices.contains(index) else { return }
@@ -442,14 +495,29 @@ final class BatchToolModel: ObservableObject {
             error = "결과 파일을 찾지 못했습니다."
             return
         }
-        let panel = NSSavePanel()
-        panel.title = "결과 저장"
-        panel.nameFieldStringValue = saveName(for: job)
-        if let folder = lastSaveFolder { panel.directoryURL = folder }
-        guard panel.runModal() == .OK, let url = panel.url else { return }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: output.path, isDirectory: &isDirectory) else {
+            error = "결과 파일이 이동되었거나 없습니다."; return
+        }
+        let url: URL
+        if isDirectory.boolValue {
+            let panel = NSOpenPanel()
+            panel.title = "결과 폴더를 저장할 위치 선택"
+            panel.canChooseDirectories = true; panel.canChooseFiles = false
+            panel.allowsMultipleSelection = false; panel.prompt = "저장"
+            panel.directoryURL = lastSaveFolder
+            guard panel.runModal() == .OK, let folder = panel.url else { return }
+            url = CompressionWorkspace.uniqueURL(in: folder, name: saveName(for: job))
+        } else {
+            let panel = NSSavePanel()
+            panel.title = "결과 저장"; panel.nameFieldStringValue = saveName(for: job)
+            panel.directoryURL = lastSaveFolder
+            guard panel.runModal() == .OK, let selected = panel.url else { return }
+            url = selected
+        }
         do {
-            try? FileManager.default.removeItem(at: url)
-            try FileManager.default.copyItem(at: output, to: url)
+            try LocalFileStorage.copyPreservingDestination(output, to: url)
+            history.markSaved(id: job.id, at: url)
             lastSaveFolder = url.deletingLastPathComponent()
             status = "저장했습니다: \(url.lastPathComponent)"
         } catch {
@@ -458,10 +526,17 @@ final class BatchToolModel: ObservableObject {
     }
 
     func saveAll() {
-        let finished = jobs.filter(\.isFinished)
+        save(jobs.filter(\.isFinished), title: "결과를 저장할 폴더 선택")
+    }
+
+    func saveSelected() {
+        save(jobs.filter { selection.contains($0.id) && $0.isFinished }, title: "선택한 결과를 저장할 폴더 선택")
+    }
+
+    private func save(_ finished: [ToolJob], title: String) {
         guard !finished.isEmpty else { return }
         let panel = NSOpenPanel()
-        panel.title = "결과를 저장할 폴더 선택"
+        panel.title = title
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
@@ -476,6 +551,7 @@ final class BatchToolModel: ObservableObject {
             let target = CompressionWorkspace.uniqueURL(in: directory, name: saveName(for: job))
             do {
                 try FileManager.default.copyItem(at: output, to: target)
+                history.markSaved(id: job.id, at: target)
                 saved += 1
             } catch {
                 self.error = "저장하지 못했습니다: \(error.localizedDescription)"

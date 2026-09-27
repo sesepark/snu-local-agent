@@ -288,12 +288,35 @@ struct BriefingService {
             // already classified, only what is new or has changed since.
             let sameDayItems = state.dailyBriefings[dateKey]?.items ?? []
             let unchanged = CarryForwardPolicy.unchangedItems(in: grouped, alreadyCarried: carried + sameDayItems)
-            let pending = grouped.filter { !unchanged.contains($0.id) }
+            var pending = grouped.filter { !unchanged.contains($0.id) }
+            // `academicObligation` did not exist in older checkpoints. Merely adding
+            // the new prompt would leave those rows frozen forever because incremental
+            // briefing deliberately carries unchanged mail without asking the model
+            // again. Revisit only still-open actions whose old checkpoint has no
+            // academic verdict, using the bounded excerpt already kept for the archive.
+            // This chooses candidates structurally; the model and the visible academic
+            // prompt still make the actual decision, never a word list.
+            let pendingTrackingIDs = Set(pending.map { $0.stableID ?? $0.id })
+            let legacyAcademicCandidates = (carried + sameDayItems).filter {
+                $0.category == .action && $0.academicObligation == nil
+                    && !pendingTrackingIDs.contains($0.trackingID)
+                    && InboxEvidenceGate.isUsable($0.bodyExcerpt ?? "")
+            }
+            let legacyAcademicItems = Dictionary(grouping: legacyAcademicCandidates, by: \.trackingID)
+                .compactMap { $0.value.first }
+            pending += legacyAcademicItems.map { old in
+                let source = old.sourceItem
+                return SourceItem(
+                    id: source.id, source: source.source, account: source.account, author: source.author,
+                    timestamp: source.timestamp, subject: source.subject, body: old.bodyExcerpt ?? "", link: source.link,
+                    stableID: source.stableID, audience: source.audience, knownDeadline: source.knownDeadline
+                )
+            }
             await progress(.collecting, """
             1/4 · 수집 완료
             \(collectionSummary)
             사용자 무시 규칙 \(preferenceResult.ignored.count)개 제외, 중복 제거 후 \(deduped.count)개, 반복 알림 묶음 후 \(grouped.count)개입니다.
-            이전 브리핑에서 \(carried.count)개를 이월하고, 새롭거나 내용이 바뀐 \(pending.count)개만 분석합니다.
+            이전 브리핑에서 \(carried.count)개를 이월하고, 새 항목·변경 항목·학업 판정이 없던 기존 항목 \(pending.count)개를 분석합니다.
             """, pending.count)
             let sourceGroups = Dictionary(grouping: pending, by: \.source)
             // A source missing from the preferred order must still be classified.
@@ -306,11 +329,16 @@ struct BriefingService {
                 let items = sourceGroups[source] ?? []
                 await progress(.classifying, "2/4 · \(source) \(items.count)개를 분류하고 한국어 브리핑 문장까지 한 번에 만들고 있습니다.", nil)
                 do {
-                    var sourceClassified = try await classifier.classify(items, userInstructions: preferences.userInstructions, corrections: correctionBlock)
+                    var sourceClassified = try await classifier.classify(
+                        items,
+                        userInstructions: preferences.userInstructions,
+                        academicInstructions: preferences.academicInstructions,
+                        corrections: correctionBlock
+                    )
                     sourceClassified = sourceClassified.map { item in
                         guard preferenceResult.importantIDs.contains(item.id) else { return item }
                         var important = item
-                        important = ClassifiedItem(sourceItem: important.sourceItem, facts: important.facts, category: .action, summary: important.summary, reason: "사용자의 중요 규칙과 일치: \(important.reason)", importance: 5, nextAction: important.nextAction, deadline: important.deadline, displayTitle: important.displayTitle, displaySummary: important.displaySummary, displayNextAction: important.displayNextAction, confidence: 1, pinnedByUserRule: true, contentFingerprint: item.contentFingerprint, bodyExcerpt: item.bodyExcerpt)
+                        important = ClassifiedItem(sourceItem: important.sourceItem, facts: important.facts, category: .action, summary: important.summary, reason: "사용자의 중요 규칙과 일치: \(important.reason)", importance: 5, nextAction: important.nextAction, deadline: important.deadline, displayTitle: important.displayTitle, displaySummary: important.displaySummary, displayNextAction: important.displayNextAction, confidence: 1, academicObligation: important.academicObligation, pinnedByUserRule: true, contentFingerprint: item.contentFingerprint, bodyExcerpt: item.bodyExcerpt)
                         return important
                     }
                     sourceClassified = sourceClassified.map { item in

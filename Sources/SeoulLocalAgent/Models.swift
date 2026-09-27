@@ -56,6 +56,8 @@ struct ClassifiedItem: Codable, Hashable, Identifiable {
     var displaySummary: String?
     var displayNextAction: String?
     var confidence: Double?
+    /// A required course task that directly affects grades or attendance.
+    var academicObligation: Bool? = nil
     /// Set when the user's own "always important" pattern matched. The heuristic
     /// quality gate must not overrule an explicit user rule.
     var pinnedByUserRule: Bool? = nil
@@ -167,13 +169,14 @@ extension DailyBriefing {
             let redacted = SourceItem(
                 id: source.id, source: source.source, account: source.account, author: source.author,
                 timestamp: source.timestamp, subject: source.subject, body: "", link: source.link,
-                stableID: source.stableID, audience: source.audience
+                stableID: source.stableID, audience: source.audience, knownDeadline: source.knownDeadline
             )
             return ClassifiedItem(
                 sourceItem: redacted, facts: item.facts, category: item.category, summary: item.summary,
                 reason: item.reason, importance: item.importance, nextAction: item.nextAction,
                 deadline: item.deadline, displayTitle: item.displayTitle, displaySummary: item.displaySummary,
                 displayNextAction: item.displayNextAction, confidence: item.confidence,
+                academicObligation: item.academicObligation,
                 pinnedByUserRule: item.pinnedByUserRule, contentFingerprint: item.contentFingerprint,
                 // Deliberately kept while the full body goes: this is the bounded
                 // excerpt the archive displays, and losing it here would empty

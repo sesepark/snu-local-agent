@@ -20,8 +20,8 @@ import Foundation
 final class MediaDaemon: @unchecked Sendable {
     static let shared = MediaDaemon()
 
-    static let executable = ProjectRoot.venv(".venv-media/bin/python")
-    static let runnerScript = ProjectRoot.script("media_runner.py")
+    static let executable = ProjectRoot.resolving(".venv-media/bin/python")
+    static let runnerScript = ProjectRoot.resolving("scripts/media_runner.py")
     static let idleTimeout = 300
 
     /// Whatever the runner reports back on success.

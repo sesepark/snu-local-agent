@@ -195,6 +195,7 @@ struct ConversionRequest: Sendable {
 
 struct FileConverter: BatchToolWorker {
     let request: ConversionRequest
+    var historySettings: String { "\(request.target.title) · 화질 \(Int(request.quality * 100))%" }
 
     var accepts: Set<String> { request.target.accepts }
 
@@ -598,21 +599,71 @@ struct FileConverter: BatchToolWorker {
         // time against a profile that is already open, which is exactly what a
         // batch would do.
         let profile = scratch.appending(path: "profile")
-        _ = try await ProcessRunner().run(soffice, [
+        let fontEnvironment = try officeFontEnvironment(in: scratch, soffice: soffice)
+        let output = try await ProcessRunner().run(soffice, [
             "--headless", "--norestore", "--invisible",
-            "-env:UserInstallation=file://\(profile.path)",
+            Self.officeProfileArgument(profile),
             "--convert-to", "pdf", "--outdir", scratch.path, source.path,
-        ], expectsStandardOutput: false)
+        ], environment: fontEnvironment, expectsStandardOutput: false)
 
         let stem = source.deletingPathExtension().lastPathComponent
         let produced = scratch.appending(path: "\(stem).pdf")
         guard FileManager.default.fileExists(atPath: produced.path) else {
-            throw AgentError.processFailed("LibreOffice가 이 문서를 PDF로 바꾸지 못했습니다: \(source.lastPathComponent)")
+            let diagnostic = String(decoding: output, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            throw AgentError.processFailed("LibreOffice가 이 문서를 PDF로 바꾸지 못했습니다: \(source.lastPathComponent)" + (diagnostic.isEmpty ? "" : "\n\(diagnostic.prefix(1500))"))
         }
+        guard let pdf = PDFDocument(url: produced), pdf.pageCount > 0 else {
+            throw AgentError.processFailed("변환 결과가 올바른 PDF가 아닙니다: \(source.lastPathComponent)")
+        }
+        let pages = pdf.pageCount
         try? FileManager.default.removeItem(at: destination)
         try FileManager.default.moveItem(at: produced, to: destination)
-        let pages = PDFDocument(url: destination)?.pageCount ?? 0
-        return pages > 0 ? "\(pages)쪽" : "PDF"
+        return "\(pages)쪽"
+    }
+
+    static func officeProfileArgument(_ profile: URL) -> String {
+        // Bootstrap expects a URL, not a filesystem path. Unescaped spaces in
+        // Application Support make LibreOffice abort during configuration startup.
+        "-env:UserInstallation=\(profile.absoluteString)"
+    }
+
+    static func officeFontEnvironment(in scratch: URL, soffice: String) throws -> [String: String] {
+        // macOS headless LibreOffice uses Fontconfig rather than CoreText. Its
+        // bundled configuration only sees bundled Latin fonts unless we supply
+        // font directories explicitly: Korean text can extract correctly while
+        // every visible glyph is blank. Scope this configuration to this child.
+        let fm = FileManager.default
+        let resources = URL(fileURLWithPath: soffice).deletingLastPathComponent()
+            .deletingLastPathComponent().appending(path: "Resources/fonts/truetype")
+        let directories = [
+            "/System/Library/Fonts", "/Library/Fonts",
+            fm.homeDirectoryForCurrentUser.appending(path: "Library/Fonts").path,
+            "/System/Library/AssetsV2/com_apple_MobileAsset_Font8",
+            "/Applications/Microsoft PowerPoint.app/Contents/Resources/DFonts",
+            "/Applications/Microsoft Word.app/Contents/Resources/DFonts",
+            resources.path,
+        ].filter { fm.fileExists(atPath: $0) }
+        let cache = fm.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appending(path: "SeoulLocalAgent/OfficeFonts", directoryHint: .isDirectory)
+        try fm.createDirectory(at: cache, withIntermediateDirectories: true,
+                               attributes: [.posixPermissions: 0o700])
+        func xml(_ value: String) -> String {
+            value.replacingOccurrences(of: "&", with: "&amp;")
+                .replacingOccurrences(of: "<", with: "&lt;")
+                .replacingOccurrences(of: ">", with: "&gt;")
+        }
+        let config = scratch.appending(path: "fonts.conf")
+        let aliases = resources.appending(path: "fc_local.conf")
+        let content = """
+        <?xml version="1.0"?>
+        <fontconfig>
+        \(directories.map { "<dir>\(xml($0))</dir>" }.joined(separator: "\n"))
+        <include ignore_missing="yes">\(xml(aliases.path))</include>
+        <cachedir>\(xml(cache.path))</cachedir>
+        </fontconfig>
+        """
+        try content.write(to: config, atomically: true, encoding: .utf8)
+        return ["FONTCONFIG_FILE": config.path]
     }
 
     static func pdfToText(_ source: URL, to destination: URL) throws -> String {

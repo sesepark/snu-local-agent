@@ -180,6 +180,7 @@ struct Track: Codable, Identifiable, Hashable, Sendable {
 
     /// 재생 상태를 한 문장으로. 화면 세 곳이 각자 다르게 쓰던 문장을 하나로 모았다.
     var availabilityNote: String {
+        if origin == .youtube, asset?.isManual != true { return "YouTube 원본 영상 · 앱 광고 차단 설정 적용" }
         if let asset { return asset.provenance }
         if searchedWithoutResultAt != nil { return "광고 없이 들을 수 있는 음원을 찾지 못했습니다" }
         return "음원을 아직 찾지 않았습니다"

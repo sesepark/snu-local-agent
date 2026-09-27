@@ -291,6 +291,7 @@ enum ReaderPriorityRules {
             nextAction: action, deadline: item.deadline,
             displayTitle: item.displayTitle, displaySummary: item.displaySummary,
             displayNextAction: up ? action : nil, confidence: item.confidence,
+            academicObligation: item.academicObligation,
             pinnedByUserRule: item.pinnedByUserRule, contentFingerprint: item.contentFingerprint,
             bodyExcerpt: item.bodyExcerpt
         )
@@ -354,6 +355,7 @@ enum BriefingQualityGate {
                         displaySummary: result.displaySummary,
                         displayNextAction: "원문 확인",
                         confidence: min(result.confidence ?? 1, 0.5),
+                        academicObligation: result.academicObligation,
                         pinnedByUserRule: result.pinnedByUserRule
                     )
                     // Rebuilding an item by hand loses whatever field was added

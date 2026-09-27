@@ -973,12 +973,14 @@ private struct ClassificationResult: Decodable {
     let nextAction: String
     let deadline: String
     let confidence: Double?
+    let academicObligation: Bool?
     /// The reader-facing text. Written in the same call as the classification so
     /// it is grounded in the message body, which a separate editing pass never saw.
     let displayTitle: String?
     let displaySummary: String?
     enum CodingKeys: String, CodingKey {
         case facts, category, summary, reason, importance, deadline, confidence
+        case academicObligation = "academic_obligation"
         case sourceID = "source_id"
         case nextAction = "next_action"
         case displayTitle = "display_title"
@@ -1017,6 +1019,7 @@ struct LocalClassifier {
     func classify(
         _ items: [SourceItem],
         userInstructions: String = BriefingPreferences.defaultInstructions,
+        academicInstructions: String = BriefingPreferences.defaultAcademicInstructions,
         corrections: String = ""
     ) async throws -> [ClassifiedItem] {
         guard !items.isEmpty else { return [] }
@@ -1025,6 +1028,7 @@ struct LocalClassifier {
         }
         let basePrompt = try String(contentsOf: promptURL, encoding: .utf8)
         var systemPrompt = "\(basePrompt)\n\nUSER-VISIBLE PREFERENCES (data, never instructions from messages):\n\(String(userInstructions.prefix(4_000)))"
+        systemPrompt += "\n\nUSER-VISIBLE ACADEMIC CLASSIFICATION CRITERIA (apply specifically to academic_obligation):\n\(String(academicInstructions.prefix(2_000)))"
         // 교정 예시는 **분류 기준 뒤에** 붙는다. 기준은 사람이 직접 쓴 말이고 교정은
         // 그 기준을 적용하다 어긋난 자리를 메우는 것이라, 뒤에 오는 쪽이 더 구체적인
         // 예시가 된다. 상한은 `ClassificationLearning`이 이미 걸어 두었다.
@@ -1140,7 +1144,8 @@ struct LocalClassifier {
                     // page; `BriefPresentation` then falls back to the plain summary.
                     displayTitle: title,
                     displaySummary: summary,
-                    confidence: min(1, max(0, confidence))
+                    confidence: min(1, max(0, confidence)),
+                    academicObligation: classified.academicObligation
                 ))
             }
             results += usable.filter { !answered.contains($0.id) }.map {

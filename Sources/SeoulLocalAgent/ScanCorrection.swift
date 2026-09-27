@@ -110,6 +110,9 @@ struct ScanRequest: Sendable {
 
 struct ScanCorrectionWorker: BatchToolWorker {
     let request: ScanRequest
+    var historySettings: String {
+        "\(request.finish.title) · \(request.resolution.title) · \(request.format.title) · 테두리 감지 \(request.detectsEdges ? "켜짐" : "꺼짐")"
+    }
 
     var accepts: Set<String> { CompressionKind.imageExtensions }
     var concurrency: Int { 3 }

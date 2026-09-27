@@ -39,7 +39,7 @@ struct BriefingArchiveView: View {
         .textSelection(.enabled)
         .animation(.appContent, value: model.selectedDateKey)
         .animation(.appContent, value: model.search)
-        .onAppear { model.reconcilePlacements() }
+        .task { await model.reconcilePlacements() }
         .sheet(item: Binding(get: { model.scheduling }, set: { model.scheduling = $0 })) { entry in
             ScheduleSheet(entry: entry, model: model)
         }
@@ -81,7 +81,7 @@ struct BriefingArchiveView: View {
         ToolbarItem {
             Button("새로고침", systemImage: "arrow.clockwise") {
                 model.reload()
-                model.reconcilePlacements()
+                Task { await model.reconcilePlacements() }
             }
             .help("저장된 브리핑과 캘린더 상태를 다시 읽습니다")
         }

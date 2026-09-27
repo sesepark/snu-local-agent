@@ -101,6 +101,7 @@ struct UpscaleRequest: Sendable {
 
 struct UpscaleWorker: BatchToolWorker {
     let request: UpscaleRequest
+    var historySettings: String { "\(request.model.title) · \(request.format.title)" }
 
     var accepts: Set<String> { CompressionKind.imageExtensions }
 

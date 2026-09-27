@@ -95,6 +95,29 @@ struct BriefingArchiveTests {
         #expect(state.marks["gmail:1"]?.note == "")
     }
 
+    @Test("손대지 않은 이전 분류 기준만 새 기본값으로 옮긴다")
+    func defaultClassificationPromptMigratesWithoutOverwritingCustomText() throws {
+        let old = BriefingPreferences(userInstructions: BriefingPreferences.legacyDefaultInstructions)
+        let migrated = try JSONDecoder().decode(BriefingPreferences.self, from: JSONEncoder().encode(old))
+        #expect(migrated.userInstructions == BriefingPreferences.defaultInstructions)
+        #expect(migrated.userInstructions.contains("서비스 중단, 결제 실패, 데이터 손실, 보안 침해는 기타로 본다."))
+        #expect(migrated.userInstructions.contains("배포·빌드 실패 알림은 기타 항목이다."))
+        #expect(migrated.academicInstructions == BriefingPreferences.defaultAcademicInstructions)
+
+        let custom = BriefingPreferences(userInstructions: "내가 직접 고친 기준")
+        let restored = try JSONDecoder().decode(BriefingPreferences.self, from: JSONEncoder().encode(custom))
+        #expect(restored.userInstructions == "내가 직접 고친 기준")
+        #expect(restored.academicInstructions == BriefingPreferences.defaultAcademicInstructions)
+    }
+
+    @Test("이전 설정 파일에도 별도 학업 기준을 채운다")
+    func academicPromptDecodingToleratesMissingKey() throws {
+        let json = #"{"userInstructions":"내 기준","ignoredPatterns":[],"importantPatterns":[],"interestPatterns":[]}"#
+        let restored = try JSONDecoder().decode(BriefingPreferences.self, from: Data(json.utf8))
+        #expect(restored.userInstructions == "내 기준")
+        #expect(restored.academicInstructions == BriefingPreferences.defaultAcademicInstructions)
+    }
+
     // MARK: - 이월
 
     @Test("Carry-forward no longer depends on what a page rendered")
@@ -219,6 +242,39 @@ struct BriefingArchiveTests {
         model.step(1)
         #expect(model.selectedDateKey == "26/08/29")
         #expect(model.entries(.action).map(\.id) == ["gmail:old"])
+    }
+
+    @MainActor
+    @Test("성적에 직접 닿는 의무만 과제로 분리한다")
+    func academicObligationsSitAboveOrdinaryActions() throws {
+        let directory = temporaryDirectory()
+        let stateStore = StateStore(directory: directory)
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        var gradedMail = item(id: "gmail:exam", title: "중간고사 일정")
+        gradedMail.academicObligation = true
+        var optional = item(id: "etl:event:optional", title: "선택 특강", source: SourceName.etl)
+        optional.academicObligation = false
+        let legacyExam = item(
+            id: "etl:event:midterm", category: .reference,
+            title: "중간고사 일정", source: SourceName.etl
+        )
+        var state = PersistentState()
+        state.dailyBriefings["26/08/30"] = briefing("26/08/30", [
+            item(id: "etl:assignment:42", title: "로봇 과제", source: SourceName.etl),
+            gradedMail,
+            legacyExam,
+            optional,
+            item(id: "gmail:reply", title: "교수님께 회신"),
+        ], updatedAt: now)
+        try stateStore.save(state)
+
+        let model = BriefingArchiveModel(
+            stateStore: stateStore, archiveStore: BriefingArchiveStore(directory: directory),
+            preferences: .defaults
+        )
+        #expect(model.entries(.assignment).map(\.id) == ["etl:assignment:42", "gmail:exam", "etl:event:midterm"])
+        #expect(model.entries(.action).map(\.id) == ["etl:event:optional", "gmail:reply"])
+        #expect(model.openActionCount == 5, "위 칸으로 나눠도 남은 일 총계에서는 빠지지 않는다")
     }
 
     @Test("A link is only forgotten when it could actually be looked up")
@@ -469,6 +525,178 @@ struct BriefingArchiveTests {
         #expect(day.contains(BriefingArchiveModel.Bucket.reference.rawValue))
         #expect(day.contains("[x] 국가장학금 2차 신청"))
         #expect(day.contains("[ ] 공지 확인"))
+    }
+
+    // MARK: - eTL이 달력에 직접 놓는 것
+
+    /// 달력이 브리핑 이력만 보고 그려지면 세 가지가 어긋난다. 아직 D-3에 걸리지 않아 브리핑에
+    /// 뜬 적 없는 과제는 달력에 없고, 마감이 옮겨져도 브리핑에 찍힌 옛 날짜가 남고, 제출을
+    /// 끝낸 과제도 손으로 체크하기 전까지 마감으로 서 있다. 세 가지 모두 달력을 여는 이유를
+    /// 깎아먹는다.
+    private func writeSnapshot(_ entries: [ETLDeadlineEntry], to directory: URL) throws {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let snapshot = ETLDeadlineSnapshot(updatedAt: Date(timeIntervalSince1970: 1_800_000_000), entries: entries)
+        try encoder.encode(snapshot).write(to: directory.appending(path: "etl-deadlines.json"))
+    }
+
+    private func deadlineEntry(
+        id: String = "etl:assignment:7", kind: ETLDeadlineEntry.Kind = .assignment,
+        due: Date, submittedAt: Date? = nil, title: String = "Lab 1 보고서"
+    ) -> ETLDeadlineEntry {
+        ETLDeadlineEntry(
+            id: id, kind: kind, courseName: "자료구조의 기초", title: title,
+            dueAt: due, lockAt: nil, endAt: nil, submittedAt: submittedAt,
+            isMissing: false, isExcused: false,
+            link: URL(string: "https://myetl.snu.ac.kr/courses/305925/assignments/7"), locationName: nil
+        )
+    }
+
+    @MainActor
+    @Test("브리핑에 뜬 적 없는 eTL 마감도 달력에 선다")
+    func snapshotDeadlinesReachTheCalendar() throws {
+        let directory = temporaryDirectory()
+        let stateStore = StateStore(directory: directory)
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        // 브리핑에는 관계 없는 메일 하나뿐이다.
+        var state = PersistentState()
+        state.dailyBriefings["26/08/30"] = briefing("26/08/30", [item(id: "gmail:one", title: "메일 하나")], updatedAt: now)
+        try stateStore.save(state)
+
+        let due = now.addingTimeInterval(20 * 86_400)
+        try writeSnapshot([deadlineEntry(due: due)], to: directory)
+
+        let model = BriefingArchiveModel(stateStore: stateStore, archiveStore: BriefingArchiveStore(directory: directory), preferences: .defaults)
+        let dated = model.datedEntries(now: now)
+        let etl = try #require(dated.first { $0.entry.id == "etl:assignment:7" })
+        #expect(etl.date == due)
+        #expect(etl.kind == .deadline)
+        // 출처가 드러나야 웹 공지와 섞이지 않는다.
+        #expect(etl.entry.source == SourceName.etl)
+        #expect(etl.entry.author == "자료구조의 기초")
+        #expect(etl.isFromETL)
+    }
+
+    @MainActor
+    @Test("수업 일정은 마감이 아니라 수업으로 선다")
+    func classEventsAreNotDeadlines() throws {
+        let directory = temporaryDirectory()
+        let stateStore = StateStore(directory: directory)
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        try stateStore.save(PersistentState())
+        let start = now.addingTimeInterval(-2 * 86_400)
+        try writeSnapshot([deadlineEntry(id: "etl:event:52184", kind: .event, due: start, title: "특강")], to: directory)
+
+        let model = BriefingArchiveModel(stateStore: stateStore, archiveStore: BriefingArchiveStore(directory: directory), preferences: .defaults)
+        let event = try #require(model.datedEntries(now: now).first { $0.entry.id == "etl:event:52184" })
+        #expect(event.kind == .classEvent)
+        // 지나간 수업을 두고 "지났습니다"라고 재촉할 일은 아니다.
+        #expect(!event.isLate(now: now))
+        #expect(!event.nags(now: now))
+    }
+
+    /// 브리핑에 찍힌 날짜는 그날의 기록이고, 교수가 마감을 옮기면 그 기록은 낡는다.
+    @MainActor
+    @Test("eTL이 옮긴 마감이 브리핑에 찍힌 날짜를 이긴다")
+    func snapshotOverridesTheArchivedDeadline() throws {
+        let directory = temporaryDirectory()
+        let stateStore = StateStore(directory: directory)
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let old = now.addingTimeInterval(2 * 86_400)
+        var state = PersistentState()
+        state.dailyBriefings["26/08/30"] = briefing("26/08/30", [
+            item(id: "etl:assignment:7", title: "Lab 1 보고서",
+                 deadline: ISO8601DateFormatter().string(from: old), source: SourceName.etl),
+        ], updatedAt: now)
+        try stateStore.save(state)
+
+        let moved = now.addingTimeInterval(16 * 86_400)
+        try writeSnapshot([deadlineEntry(due: moved)], to: directory)
+
+        let model = BriefingArchiveModel(stateStore: stateStore, archiveStore: BriefingArchiveStore(directory: directory), preferences: .defaults)
+        let rows = model.datedEntries(now: now).filter { $0.entry.id == "etl:assignment:7" }
+        // 두 줄이 아니라 한 줄이고, 그 한 줄이 새 날짜다.
+        #expect(rows.count == 1)
+        #expect(rows.first?.date == moved)
+    }
+
+    /// 제출은 앱 밖에서 일어난다. 그것을 읽지 않으면 이미 낸 과제가 손으로 체크할 때까지
+    /// 달력에 남고, 남은 일과 끝낸 일이 섞인 달력은 열어 볼 이유가 줄어든다.
+    /// `dropOrphanedMarks`는 브리핑에 없는 마크를 오래되면 버린다. eTL 마감은 브리핑에 실린
+    /// 적 없이도 달력에 서므로, 그 규칙을 그대로 두면 사람이 자동 완료를 되돌린 기록이
+    /// 사라지고 다음 실행이 다시 완료로 접는다.
+    @MainActor
+    @Test("자동 완료를 되돌린 기록은 오래되어도 버리지 않는다")
+    func keepsTheReadersUndoEvenWhenTheItemIsGone() throws {
+        let directory = temporaryDirectory()
+        let stateStore = StateStore(directory: directory)
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        var state = PersistentState()
+        state.dailyBriefings["26/08/30"] = briefing("26/08/30", [item(id: "gmail:one", title: "메일 하나")], updatedAt: now)
+        try stateStore.save(state)
+
+        // 사람이 오래전에 되돌린 흔적만 남은 마크. 브리핑에도 스냅샷에도 없다.
+        let archiveStore = BriefingArchiveStore(directory: directory)
+        var undone = BriefingMark()
+        undone.isDone = false
+        undone.sourceDoneAt = Date(timeIntervalSince1970: 1_700_000_000)
+        undone.updatedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        try archiveStore.save(BriefingArchiveState(marks: ["etl:assignment:7": undone]))
+
+        let model = BriefingArchiveModel(stateStore: stateStore, archiveStore: archiveStore, preferences: .defaults)
+        let kept = model.mark(for: "etl:assignment:7")
+        #expect(kept.sourceDoneAt != nil)
+        #expect(!kept.isDone)
+        // 저장소에도 남아 있어야 다음 실행이 다시 접지 않는다.
+        #expect(BriefingArchiveStore(directory: directory).load().marks["etl:assignment:7"] != nil)
+    }
+
+    /// `etl-deadlines.json`은 사용자가 열어 보고 지울 수 있는 파일이다. 같은 `id`가 두 번
+    /// 적혀 있다고 앱이 서면 달력이 아예 열리지 않는다.
+    @MainActor
+    @Test("스냅샷에 같은 줄이 두 번 있어도 달력은 열린다")
+    func duplicateSnapshotEntriesDoNotCrash() throws {
+        let directory = temporaryDirectory()
+        let stateStore = StateStore(directory: directory)
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        try stateStore.save(PersistentState())
+        let due = now.addingTimeInterval(3 * 86_400)
+        try writeSnapshot([deadlineEntry(due: due), deadlineEntry(due: due.addingTimeInterval(86_400))], to: directory)
+
+        let model = BriefingArchiveModel(stateStore: stateStore, archiveStore: BriefingArchiveStore(directory: directory), preferences: .defaults)
+        let rows = model.datedEntries(now: now).filter { $0.entry.id == "etl:assignment:7" }
+        #expect(rows.count == 1)
+        // 나중에 적힌 줄을 쓴다.
+        #expect(rows.first?.date == due.addingTimeInterval(86_400))
+    }
+
+    @MainActor
+    @Test("제출을 확인하면 자동으로 접히고, 사람이 되돌리면 다시 켜지지 않는다")
+    func submissionAutoCompletesButNeverOverridesTheReader() throws {
+        let directory = temporaryDirectory()
+        let stateStore = StateStore(directory: directory)
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        try stateStore.save(PersistentState())
+        let due = now.addingTimeInterval(5 * 86_400)
+        let submitted = now.addingTimeInterval(-3_600)
+        try writeSnapshot([deadlineEntry(due: due, submittedAt: submitted)], to: directory)
+
+        let archiveStore = BriefingArchiveStore(directory: directory)
+        let model = BriefingArchiveModel(stateStore: stateStore, archiveStore: archiveStore, preferences: .defaults)
+        let mark = model.mark(for: "etl:assignment:7")
+        #expect(mark.isDone)
+        #expect(mark.sourceDoneAt != nil)
+        #expect(mark.completedAt == submitted)
+
+        // 사람이 "아직 아니다"라고 되돌린다.
+        let row = try #require(model.datedEntries(now: now).first { $0.entry.id == "etl:assignment:7" })
+        model.toggleDone(row.entry)
+        #expect(!model.mark(for: "etl:assignment:7").isDone)
+
+        // 같은 스냅샷을 다시 읽어도 뒤집지 않는다. 사람의 손이 언제나 출처를 이긴다.
+        let again = BriefingArchiveModel(stateStore: stateStore, archiveStore: archiveStore, preferences: .defaults)
+        #expect(!again.mark(for: "etl:assignment:7").isDone)
+        #expect(!again.datedEntries(now: now).contains { $0.entry.id == "etl:assignment:7" && $0.isDone })
     }
 }
 

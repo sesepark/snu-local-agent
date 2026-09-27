@@ -7,8 +7,8 @@ struct TranscriptionService {
         let backend: String?
     }
     private let runner = ProcessRunner()
-    private let executable = ProjectRoot.venv(".venv-transcription/bin/python")
-    private let runnerScript = ProjectRoot.script("transcribe_runner.py")
+    private let executable = ProjectRoot.resolving(".venv-transcription/bin/python")
+    private let runnerScript = ProjectRoot.resolving("scripts/transcribe_runner.py")
     private static let tokenService = "kr.ac.snu.local-agent.pyannote"
     private static let tokenAccount = "speaker-diarization"
 

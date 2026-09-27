@@ -51,10 +51,12 @@ struct TranscriptRun: Codable, Identifiable, Hashable {
 }
 
 enum TranscriptOrganizationKind: String, Codable, CaseIterable, Identifiable {
-    case lecture, meeting, general
+    case automatic, lecture, meeting, seminar, general
     var id: String { rawValue }
     var title: String {
         switch self {
+        case .automatic: "자동 판단"
+        case .seminar: "세미나"
         case .lecture: "수업"
         case .meeting: "회의"
         case .general: "일반"
@@ -67,9 +69,9 @@ enum TranscriptOrganizationDetail: String, Codable, CaseIterable, Identifiable {
     var id: String { rawValue }
     var title: String {
         switch self {
-        case .sourcePreserving: "원문 보존 · 권장"
+        case .sourcePreserving: "자세히 정리"
         case .balanced: "균형"
-        case .concise: "간략"
+        case .concise: "핵심 위주 · 기본"
         }
     }
 }

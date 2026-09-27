@@ -204,8 +204,8 @@ enum VisionSubjectMatting {
 final class MattingDaemon: @unchecked Sendable {
     static let shared = MattingDaemon()
 
-    static let executable = ProjectRoot.venv(".venv-matting/bin/python")
-    static let runnerScript = ProjectRoot.script("matting_runner.py")
+    static let executable = ProjectRoot.resolving(".venv-matting/bin/python")
+    static let runnerScript = ProjectRoot.resolving("scripts/matting_runner.py")
     /// Idle seconds before the runner unloads the weights and exits by itself.
     static let idleTimeout = 300
 
@@ -515,9 +515,7 @@ struct BackgroundRemovalService {
 
     /// Where a finished cutout lands before the user saves it somewhere real.
     static func workingDirectory() throws -> URL {
-        let directory = FileManager.default.temporaryDirectory.appending(path: "SeoulLocalAgent-Cutout", directoryHint: .isDirectory)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        return directory
+        try ProcessingResults.directory("Cutout")
     }
 
     static func outputURL(for source: URL, in directory: URL) -> URL {

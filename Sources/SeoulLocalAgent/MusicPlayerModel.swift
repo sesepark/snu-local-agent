@@ -52,10 +52,16 @@ enum MusicSearchScope: String, CaseIterable, Identifiable, Sendable {
 
     var explanation: String {
         switch self {
-        case .youtube: "YouTube에서 찾습니다. 재생은 광고 없는 음원으로 대신합니다."
+        case .youtube: "YouTube에서 찾고 선택한 원본 영상으로 재생합니다."
         case .local: "이 Mac에 있는 파일에서 찾습니다. 찾은 것은 전부 바로 재생됩니다."
         case .free: "Audius와 Internet Archive에서 찾습니다. 찾은 것은 전부 바로 재생됩니다."
         }
+    }
+}
+
+enum MusicPlaybackPolicy {
+    static func usesOriginalYouTube(_ track: Track, enabled: Bool) -> Bool {
+        enabled && track.origin == .youtube && track.asset?.isManual != true
     }
 }
 
@@ -87,6 +93,12 @@ final class MusicPlayerModel: ObservableObject {
     @Published var notice: String?
 
     @Published private(set) var route: MusicRoute = .none
+    @Published var usesOriginalYouTube: Bool {
+        didSet {
+            UserDefaults.standard.set(usesOriginalYouTube, forKey: "musicOriginalYouTube")
+            stop() // Switching routes must not leave the old source playing.
+        }
+    }
     /// 광고 없는 음원을 못 찾은 곡을 YouTube로 넘길지. 끄면 그런 곡은 재생하지 않는다.
     @Published var allowsYouTubeFallback: Bool {
         didSet {
@@ -154,7 +166,7 @@ final class MusicPlayerModel: ObservableObject {
 
     // MARK: 시작
 
-    /// 앱이 끝날 때 마지막으로 한 번 저장하기 위한 것. `PrintModel.current`와
+    /// 앱이 끝날 때 마지막으로 한 번 저장하기 위한 것. `SOArmConsoleModel.current`와
     /// 같은 이유로 둔다 — `applicationWillTerminate`은 뷰 트리 밖이라 컨트롤러를
     /// 붙잡을 방법이 없다.
     static private(set) weak var current: MusicPlayerModel?
@@ -166,6 +178,7 @@ final class MusicPlayerModel: ObservableObject {
         self.query = loaded.lastQuery
         self.musicOnlySearch = UserDefaults.standard.object(forKey: "musicOnlySearch") as? Bool ?? true
         self.allowsYouTubeFallback = UserDefaults.standard.object(forKey: "musicYouTubeFallback") as? Bool ?? true
+        self.usesOriginalYouTube = UserDefaults.standard.object(forKey: "musicOriginalYouTube") as? Bool ?? true
         self.youtubeAPIKey = configuration.load()
 
         player.volume = Float(loaded.volume)
@@ -528,6 +541,11 @@ final class MusicPlayerModel: ObservableObject {
         let request = UUID()
         playRequest = request
 
+        if MusicPlaybackPolicy.usesOriginalYouTube(track, enabled: usesOriginalYouTube) {
+            attachYouTube(track, from: offset)
+            return
+        }
+
         if let url = track.asset?.streamURL {
             attach(url, track: track, from: offset)
             return
@@ -602,7 +620,7 @@ final class MusicPlayerModel: ObservableObject {
             advance(auto: true)
         } else {
             player.pause()
-            status = .failed("이 대기열에는 광고 없이 들을 수 있는 곡이 없습니다.")
+            status = .failed("이 대기열에서 재생할 수 있는 음원을 찾지 못했습니다.")
         }
     }
 
@@ -959,7 +977,7 @@ final class MusicPlayerModel: ObservableObject {
 
 /// `--music-check`. 화면을 열지 않고 음악 탭이 실제로 닿는 곳을 한 번씩 두드려 본다.
 ///
-/// `--connection-check`와 같은 이유로 있다: 무엇이 되고 무엇이 안 되는지를
+/// `--connection-check`·`--soarm-check`와 같은 이유로 있다: 무엇이 되고 무엇이 안 되는지를
 /// 창을 눌러 보지 않고 알 수 있어야 하고, 고정 문자열이 아니라 **실제 시도**여야 한다.
 /// 소리는 내지 않는다 — 음량 0으로 열어서 재생 준비까지만 확인한다.
 enum MusicConnectionCheck {

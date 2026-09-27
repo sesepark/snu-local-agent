@@ -236,7 +236,7 @@ struct CompressionItem: Identifiable, Sendable {
         case failed(String)
     }
 
-    let id = UUID()
+    var id = UUID()
     let source: URL
     let kind: CompressionKind
     var originalBytes: Int
@@ -386,10 +386,7 @@ enum CompressionWorkspace {
     /// Where results land before the user picks a real destination. Separate
     /// from the 누끼 folder so clearing one never disturbs the other.
     static func directory() throws -> URL {
-        let directory = FileManager.default.temporaryDirectory
-            .appending(path: "SeoulLocalAgent-Compress", directoryHint: .isDirectory)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        return directory
+        try ProcessingResults.directory("Compress")
     }
 
     static func outputURL(for source: URL, extension fileExtension: String, in directory: URL) -> URL {
@@ -443,7 +440,7 @@ enum CompressionWorkspace {
                 )) ?? []
                 queue.append(contentsOf: children.sorted { $0.lastPathComponent < $1.lastPathComponent }.map { ($0, depth + 1) })
             } else if CompressionKind.of(url) != nil {
-                files.append(url)
+                if !files.contains(where: { $0.resolvingSymlinksInPath() == url.resolvingSymlinksInPath() }) { files.append(url) }
             }
         }
         return (files, truncated)

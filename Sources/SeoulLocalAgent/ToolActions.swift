@@ -124,9 +124,11 @@ extension AutomationController {
     /// dropped: quietly overriding a format the user deliberately picked would
     /// be worse than the error it avoids.
     func convertFiles(_ urls: [URL]) {
-        let extensions = Set(urls.map { $0.pathExtension.lowercased() })
+        let allInputs = ConversionTarget.allCases.reduce(into: Set<String>()) { $0.formUnion($1.accepts) }
+        let candidates = ToolWorkspace.expand(urls, accepting: allInputs).files
+        let extensions = Set(candidates.map { $0.pathExtension.lowercased() })
         if !extensions.contains(where: { conversionTarget.accepts.contains($0) }) {
-            if let family = urls.compactMap(ConversionFamily.of).first, family != conversionFamily {
+            if let family = candidates.compactMap(ConversionFamily.of).first, family != conversionFamily {
                 conversionFamily = family
             }
             if let match = conversionFamily.targets.first(where: { target in

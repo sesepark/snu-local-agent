@@ -30,12 +30,23 @@ struct BriefingMark: Codable, Equatable {
     /// same thread. It is also the honest record — the archive can still say
     /// what the model thought and what the reader changed it to.
     var categoryOverride: BriefCategory?
+    /// 출처가 "이건 끝났다"고 알려 준 때. eTL이 제출을 확인해 준 과제가 여기 해당한다.
+    ///
+    /// `isDone`과 따로 두는 이유는 되돌림 때문이다. 값이 한 번 들어가면 다시는 자동으로
+    /// 켜지 않으므로, 사람이 나중에 체크를 풀면 그 상태가 그대로 남는다 — 사람의 손이
+    /// 언제나 출처를 이긴다.
+    var sourceDoneAt: Date?
     var updatedAt = Date()
 
     var isPlaced: Bool { calendarEventID != nil || reminderID != nil }
     /// A mark with nothing in it is not worth storing, and pruning it keeps the
     /// file proportional to what the user actually touched.
-    var isBlank: Bool { !isDone && note.isEmpty && !isPlaced && categoryOverride == nil }
+    ///
+    /// `sourceDoneAt` counts as something in it even on its own. Un-ticking an
+    /// item the source had closed leaves a mark that is otherwise empty, and
+    /// pruning that mark would throw away the very record that stops the next
+    /// run from ticking it again — the reader would undo it every morning.
+    var isBlank: Bool { !isDone && note.isEmpty && !isPlaced && categoryOverride == nil && sourceDoneAt == nil }
 
     init() {}
 
@@ -51,6 +62,7 @@ struct BriefingMark: Codable, Equatable {
         reminderID = try container.decodeIfPresent(String.self, forKey: .reminderID)
         scheduledAt = try container.decodeIfPresent(Date.self, forKey: .scheduledAt)
         categoryOverride = try container.decodeIfPresent(BriefCategory.self, forKey: .categoryOverride)
+        sourceDoneAt = try container.decodeIfPresent(Date.self, forKey: .sourceDoneAt)
         updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt) ?? Date()
     }
 }
@@ -100,10 +112,15 @@ struct BriefingArchiveState: Codable {
 /// message bodies — only identifiers, a flag, and whatever note was typed.
 struct BriefingArchiveStore: Sendable {
     private let url: URL
+    /// 이 저장소가 사는 폴더. 같은 자리에 놓인 다른 파일(eTL 스냅샷)을 찾을 때 쓴다 —
+    /// 테스트가 임시 폴더를 건네면 그 파일도 함께 임시 폴더에서 찾아야, 테스트가 이
+    /// Mac에 실제로 쌓인 자료를 읽고 결과가 기계마다 달라지는 일이 없다.
+    let directory: URL
 
     init(directory: URL? = nil) {
         let root = directory ?? URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
             .appending(path: "Library/Application Support/SeoulLocalAgent", directoryHint: .isDirectory)
+        self.directory = root
         url = root.appending(path: "briefing-archive.json")
     }
 
@@ -130,6 +147,24 @@ struct BriefingArchiveStore: Sendable {
     }
 }
 
+/// `오늘 꼭 할 일` 가운데 성적에 바로 닿는 것만 한 칸 더 위로 올린다.
+///
+/// 모델의 명시적 판정을 우선하되, eTL 과제 ID는 API가 직접 준 구조적 사실이라 모델이
+/// 필드를 빠뜨려도 놓치지 않는다. 시험 일정도 eTL의 과목 달력에서 온 경우에만 보수적으로
+/// 보완한다. 단순한 제출 요청이나 선택 행사를 키워드 하나로 과제로 올리지는 않는다.
+enum AcademicObligationRules {
+    static func matches(_ item: ClassifiedItem) -> Bool {
+        let source = item.sourceItem
+        if source.source == SourceName.etl,
+           (source.stableID ?? source.id).hasPrefix("etl:assignment:") { return true }
+        if let classified = item.academicObligation { return classified }
+        guard source.source == SourceName.etl else { return false }
+        let text = "\(source.subject) \(source.body) \(item.summary)".lowercased()
+        let gradedTerms = ["시험", "중간고사", "기말고사", "퀴즈", "쪽지시험", "평가", "배점", "성적", "감점"]
+        return gradedTerms.contains { text.contains($0) }
+    }
+}
+
 /// The 브리핑 보관함 screen's brain: the days the pipeline has produced, the
 /// reader's marks on them, and the two things the reader can do with an item —
 /// tick it off, or put it on the calendar.
@@ -142,6 +177,7 @@ struct BriefingArchiveStore: Sendable {
 final class BriefingArchiveModel: ObservableObject {
 
     enum Bucket: String, CaseIterable, Identifiable {
+        case assignment = "과제"
         case action = "오늘 꼭 할 일"
         case reference = "확인해야 할 것"
         case other = "기타"
@@ -153,6 +189,7 @@ final class BriefingArchiveModel: ObservableObject {
         /// be joined in exactly one place.
         var category: BriefCategory {
             switch self {
+            case .assignment: .action
             case .action: .action
             case .reference: .reference
             case .other: .excluded
@@ -169,6 +206,7 @@ final class BriefingArchiveModel: ObservableObject {
 
         var symbol: String {
             switch self {
+            case .assignment: "graduationcap.fill"
             case .action: "checkmark.circle"
             case .reference: "eye"
             case .other: "tray"
@@ -180,6 +218,7 @@ final class BriefingArchiveModel: ObservableObject {
         /// how the reader asked for promotions and demotions to work.
         var neighbours: [Bucket] {
             switch self {
+            case .assignment: [.reference]
             case .action: [.reference]
             case .reference: [.action, .other]
             case .other: [.reference]
@@ -188,6 +227,7 @@ final class BriefingArchiveModel: ObservableObject {
 
         var moveVerb: String {
             switch self {
+            case .assignment: "과제로 올리기"
             case .action: "오늘 꼭 할 일로 올리기"
             case .reference: "확인해야 할 것으로 옮기기"
             case .other: "기타로 내리기"
@@ -196,6 +236,7 @@ final class BriefingArchiveModel: ObservableObject {
 
         var emptyText: String {
             switch self {
+            case .assignment: "당장 성적에 영향을 주는 과제나 시험이 없습니다."
             case .action: "이 날 처리할 일이 없습니다."
             case .reference: "확인할 항목이 없습니다."
             case .other: "제외된 항목이 없습니다."
@@ -207,13 +248,31 @@ final class BriefingArchiveModel: ObservableObject {
         let item: ClassifiedItem
         let dateKey: String
         var mark: BriefingMark
+        /// eTL 스냅샷에만 있고 어느 브리핑에도 실린 적 없는 줄인가.
+        ///
+        /// 이런 줄에는 돌아갈 보관함의 날이 없다. `dateKey`를 마감 날짜로 채우면
+        /// 「보관함에서 보기」가 그런 날은 없다며 빈 화면을 열고, 다시 분석하기는 없는 날에
+        /// 쓰려 든다. 그래서 날짜는 실재하는 최근 브리핑의 것을 쓰고, 그 자리로 건너가는
+        /// 단추는 이 값으로 감춘다.
+        var isLiveOnly = false
 
         var id: String { item.trackingID }
 
         /// Where this item actually sits: what the reader decided if they
         /// decided anything, otherwise what the pipeline concluded.
         var category: BriefCategory { mark.categoryOverride ?? item.category }
-        var bucket: Bucket { Bucket(category) }
+        var bucket: Bucket {
+            // 사람의 직접 교정이 가장 먼저다. 과제를 확인 항목으로 내린 뒤에도 키워드가
+            // 다시 끌어올리면 교정이 아무 의미가 없어진다.
+            if let override = mark.categoryOverride {
+                guard override == .action else { return Bucket(override) }
+                return AcademicObligationRules.matches(item) ? .assignment : .action
+            }
+            // 시험 일정은 모델이 예전 어휘로 `reference`라 했더라도 과목 달력이라는
+            // 구조적 출처가 더 정확하다. 새 분석부터는 모델도 같은 칸을 직접 표시한다.
+            if AcademicObligationRules.matches(item) { return .assignment }
+            return Bucket(item.category)
+        }
         /// True only when the reader moved it somewhere the model did not put it,
         /// so the row can say so instead of quietly disagreeing with the report.
         var isReclassified: Bool {
@@ -317,9 +376,25 @@ final class BriefingArchiveModel: ObservableObject {
             case deadline
             /// 사람이 캘린더나 미리 알림으로 넘기면서 고른 시각.
             case scheduled
+            /// eTL 과목 달력에 걸린 수업 일정 — 특강, 보강, 시험. 마감이 아니라 그 시각에
+            /// 가 있어야 하는 것이라 지났다고 재촉할 일도 아니다.
+            case classEvent
 
-            var title: String { self == .deadline ? "마감" : "일정" }
-            var symbol: String { self == .deadline ? "flag.checkered" : "calendar.badge.checkmark" }
+            var title: String {
+                switch self {
+                case .deadline: "마감"
+                case .scheduled: "일정"
+                case .classEvent: "수업"
+                }
+            }
+
+            var symbol: String {
+                switch self {
+                case .deadline: "flag.checkered"
+                case .scheduled: "calendar.badge.checkmark"
+                case .classEvent: "graduationcap"
+                }
+            }
         }
 
         let entry: Entry
@@ -337,6 +412,10 @@ final class BriefingArchiveModel: ObservableObject {
             guard kind == .deadline, !isDone else { return false }
             return date < now
         }
+
+        /// eTL이 직접 준 날짜인가. 본문에서 읽어 낸 것이 아니라 API가 준 시각이라
+        /// "적힌 마감"을 덧붙여 보여 줄 이유가 없다.
+        var isFromETL: Bool { entry.source == SourceName.etl }
 
         /// 화면이 이 항목을 두고 재촉해도 되는가.
         ///
@@ -359,6 +438,8 @@ final class BriefingArchiveModel: ObservableObject {
     }
 
     @Published private(set) var days: [DailyBriefing] = []
+    /// eTL이 지금 알고 있는 마감과 수업 일정. 달력은 브리핑 이력이 아니라 이것을 그린다.
+    @Published private(set) var etlDeadlines = ETLDeadlineSnapshot()
     @Published var selectedDateKey: String = ""
     @Published var search = ""
     @Published var hidesDone = false
@@ -393,6 +474,7 @@ final class BriefingArchiveModel: ObservableObject {
     /// Bumped whenever the days or the marks change. Both caches below key on it.
     private var revision = 0
     private var visibleCache: (key: String, entries: [Entry])?
+    private var bucketCache: (key: String, entries: [Bucket: [Entry]])?
     private var dueCache: (key: String, groups: (due: [Entry], overdue: [Entry]))?
     private var datedCache: (key: String, entries: [DatedEntry])?
     private var correctionsCache: (key: Int, corrections: [ClassificationCorrection])?
@@ -403,14 +485,18 @@ final class BriefingArchiveModel: ObservableObject {
     init(
         stateStore: StateStore = StateStore(),
         archiveStore: BriefingArchiveStore = BriefingArchiveStore(),
-        preferences: BriefingPreferences? = nil
+        preferences: BriefingPreferences? = nil,
+        etlSnapshotURL: URL? = nil
     ) {
         self.stateStore = stateStore
         self.archiveStore = archiveStore
         self.injectedPreferences = preferences
         self.preferences = preferences ?? BriefingPreferencesStore().load()
+        self.etlSnapshotURL = etlSnapshotURL ?? archiveStore.directory.appending(path: "etl-deadlines.json")
         reload()
     }
+
+    private let etlSnapshotURL: URL
 
     // MARK: - 읽기
 
@@ -427,7 +513,35 @@ final class BriefingArchiveModel: ObservableObject {
         if days.first(where: { $0.dateKey == selectedDateKey }) == nil {
             selectedDateKey = days.first?.dateKey ?? ""
         }
+        etlDeadlines = ETLDeadlineSnapshot.load(url: etlSnapshotURL)
+        reconcileETLSubmissions()
         dropOrphanedMarks()
+    }
+
+    /// eTL이 제출을 확인해 준 과제를 끝낸 것으로 접는다.
+    ///
+    /// 제출은 앱 밖에서 일어난다. 그것을 읽지 않으면 이미 낸 과제가 손으로 체크할 때까지
+    /// 달력에 마감으로 남아 있고, 남은 일과 끝낸 일이 섞인 달력은 열어 볼 이유가 줄어든다.
+    ///
+    /// 한 번만 켠다. `sourceDoneAt`이 이미 적혀 있으면 다시 손대지 않으므로, 사람이 나중에
+    /// 체크를 풀어 "아직 아니다"라고 말한 것을 다음 실행이 뒤집지 못한다.
+    private func reconcileETLSubmissions() {
+        var changed = false
+        for entry in etlDeadlines.entries where entry.isSettled {
+            var mark = marks[entry.id] ?? BriefingMark()
+            guard mark.sourceDoneAt == nil else { continue }
+            mark.sourceDoneAt = Date()
+            if !mark.isDone {
+                mark.isDone = true
+                mark.completedAt = entry.submittedAt ?? Date()
+            }
+            mark.updatedAt = Date()
+            marks[entry.id] = mark
+            changed = true
+        }
+        guard changed else { return }
+        revision &+= 1
+        persist()
     }
 
     /// Marks whose item is gone.
@@ -439,8 +553,12 @@ final class BriefingArchiveModel: ObservableObject {
     /// is merely absent from today's run is never mistaken for an orphan.
     private func dropOrphanedMarks() {
         guard let oldest = days.compactMap({ Self.date(fromKey: $0.dateKey) }).min() else { return }
-        let alive = Set(days.flatMap { $0.items.map(\.trackingID) })
-        let kept = marks.filter { alive.contains($0.key) || $0.value.updatedAt >= oldest }
+        var alive = Set(days.flatMap { $0.items.map(\.trackingID) })
+        // eTL이 알려 준 마감은 브리핑에 실린 적 없이도 달력에 선다. 그 줄에 붙은 마크까지
+        // 고아로 보면, 사람이 자동 완료를 되돌린 기록이 사라지고 다음 실행이 다시 완료로
+        // 접는다 — `BriefingMark.isBlank`가 막으려던 바로 그 일이 여기서 다시 일어난다.
+        alive.formUnion(etlDeadlines.entries.map(\.id))
+        let kept = marks.filter { alive.contains($0.key) || $0.value.updatedAt >= oldest || $0.value.sourceDoneAt != nil }
         guard kept.count != marks.count else { return }
         marks = kept
         persist()
@@ -458,6 +576,58 @@ final class BriefingArchiveModel: ObservableObject {
         formatter.timeZone = KoreanDeadline.timeZone
         formatter.dateFormat = "yy/MM/dd"
         return formatter.date(from: key)
+    }
+
+    /// `date(fromKey:)`의 반대. eTL이 준 마감으로 만든 줄에도 날짜 열쇠가 있어야
+    /// 보관함의 다른 줄과 같은 자리에 놓인다.
+    static func dateKey(for date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = KoreanDeadline.timeZone
+        formatter.dateFormat = "yy/MM/dd"
+        return formatter.string(from: date)
+    }
+
+    /// eTL 스냅샷 한 줄을 달력이 그릴 수 있는 항목으로 바꾼다.
+    ///
+    /// 브리핑을 거치지 않은 것이라 분류도 요약도 없다. 없는 것을 지어내지 않고, 화면이
+    /// 이미 아는 사실만 채운다 — 과목, 제목, 마감, 그리고 eTL에서 왔다는 것. 체크와
+    /// 「캘린더에 추가」가 브리핑에서 온 줄과 똑같이 동작하는 것은 `trackingID`가 같기
+    /// 때문이다.
+    static func synthesised(from live: ETLDeadlineEntry) -> ClassifiedItem {
+        var lines: [String] = []
+        if let due = live.dueAt { lines.append(live.kind == .event ? "시각: \(ETLSource.dueText(due))" : "마감: \(ETLSource.dueText(due))") }
+        if let lock = live.lockAt, let due = live.dueAt, lock > due {
+            lines.append("지각 제출: \(ETLSource.dueText(lock))까지는 늦게라도 낼 수 있습니다.")
+        }
+        if let place = live.locationName, !place.isEmpty { lines.append("장소: \(place)") }
+        if live.isMissing { lines.append("마감이 지났고 아직 제출하지 않았습니다.") }
+        let source = SourceItem(
+            id: live.id,
+            source: SourceName.etl,
+            account: live.courseName,
+            author: live.courseName,
+            timestamp: live.date ?? Date(),
+            subject: live.title,
+            body: lines.joined(separator: "\n"),
+            link: live.link ?? ETLConfiguration.baseURL,
+            stableID: live.id,
+            knownDeadline: live.date.map { ISO8601DateFormatter().string(from: $0) }
+        )
+        return ClassifiedItem(
+            sourceItem: source,
+            facts: nil,
+            category: .action,
+            summary: live.kind == .event ? "eTL 과목 달력에 걸린 수업 일정입니다." : "eTL에 등록된 과제 마감입니다.",
+            reason: "eTL이 직접 알려 준 일정이라 브리핑을 거치지 않고 달력에 그대로 놓았습니다.",
+            importance: live.isMissing ? 5 : 3,
+            nextAction: "",
+            deadline: live.date.map { ISO8601DateFormatter().string(from: $0) } ?? "",
+            displayTitle: live.title,
+            displaySummary: lines.first,
+            displayNextAction: nil,
+            confidence: nil
+        )
     }
 
     static func dayTitle(_ key: String) -> String {
@@ -541,19 +711,25 @@ final class BriefingArchiveModel: ObservableObject {
     }
 
     func entries(_ bucket: Bucket) -> [Entry] {
-        let matching = visible.filter { $0.bucket == bucket }
-        let shown = hidesDone ? matching.filter { !$0.mark.isDone } : matching
-        // Finished items sink; among the rest the most important comes first, and
-        // ties break on when the thing arrived.
-        return shown.sorted { lhs, rhs in
-            if lhs.mark.isDone != rhs.mark.isDone { return !lhs.mark.isDone }
-            // 지난 마감은 끝낸 것 바로 위로 가라앉는다. 중요도만으로 세우면 3주 전에
-            // 지나간 일이 오늘 해야 하는 일보다 위에 서고, 그 자리는 그때부터 읽히지 않는다.
-            let leftLate = lhs.isOverdue(), rightLate = rhs.isOverdue()
-            if leftLate != rightLate { return !leftLate }
-            if lhs.item.importance != rhs.item.importance { return lhs.item.importance > rhs.item.importance }
-            return lhs.receivedAt > rhs.receivedAt
+        let key = "\(revision)|\(selectedDateKey)|\(search)|\(hidesDone)"
+        if bucketCache?.key != key {
+            var grouped = Dictionary(grouping: visible) { $0.bucket }
+            for current in Bucket.allCases {
+                let matching = grouped[current] ?? []
+                let shown = hidesDone ? matching.filter { !$0.mark.isDone } : matching
+                // Sort once per model revision, not once for every SwiftUI body
+                // query (heading, count, cap and plain-text export).
+                grouped[current] = shown.sorted { lhs, rhs in
+                    if lhs.mark.isDone != rhs.mark.isDone { return !lhs.mark.isDone }
+                    let leftLate = lhs.isOverdue(), rightLate = rhs.isOverdue()
+                    if leftLate != rightLate { return !leftLate }
+                    if lhs.item.importance != rhs.item.importance { return lhs.item.importance > rhs.item.importance }
+                    return lhs.receivedAt > rhs.receivedAt
+                }
+            }
+            bucketCache = (key, grouped)
         }
+        return bucketCache?.entries[bucket] ?? []
     }
 
     /// Which headings the reader has asked to see in full.
@@ -571,6 +747,7 @@ final class BriefingArchiveModel: ObservableObject {
         // the one case where a cap would be wrong.
         guard !isSearching, !expandedBuckets.contains(bucket) else { return nil }
         switch bucket {
+        case .assignment: return nil
         case .action: return AppConfig.briefingMaxActions
         case .reference: return AppConfig.briefingMaxReferences
         case .other: return Self.otherBucketLimit
@@ -592,7 +769,9 @@ final class BriefingArchiveModel: ObservableObject {
 
     /// Counted over everything in the bucket, never over the capped view: the
     /// number in the day bar answers "how much is left", not "how much fits".
-    var openActionCount: Int { entries(.action).filter { !$0.mark.isDone }.count }
+    var openActionCount: Int {
+        [Bucket.assignment, .action].flatMap(entries).filter { !$0.mark.isDone }.count
+    }
 
     /// Everything on screen as plain text, in the order it is shown.
     ///
@@ -781,6 +960,12 @@ final class BriefingArchiveModel: ObservableObject {
         var seen = Set<String>()
         var deadlines: [DatedEntry] = []
         var scheduled: [DatedEntry] = []
+        // eTL이 지금 알고 있는 것. 브리핑에 이미 뜬 항목이면 날짜만 이쪽으로 바꾸고,
+        // 뜬 적이 없으면 아래에서 줄을 새로 만든다.
+        // `uniqueKeysWithValues`가 아닌 이유: `etl-deadlines.json`은 사용자가 열어 보고 지울 수
+        // 있는 파일이라 같은 `id`가 두 번 적혀 있을 수 있고, 그때 그쪽 초기화는 앱을 세운다.
+        // 달력이 열리지 않는 것보다 나중 줄을 쓰는 편이 낫다.
+        var pendingETL = Dictionary(etlDeadlines.dated.map { ($0.id, $0) }, uniquingKeysWith: { _, later in later })
         for day in days {
             // 보관함이 보여 주는 것과 같은 정규화를 거친다. 이것을 건너뛰면 달력과
             // 보관함이 같은 메일에 대해 서로 다른 말을 하게 된다.
@@ -794,10 +979,29 @@ final class BriefingArchiveModel: ObservableObject {
                 if entry.placement != nil, let at = mark.scheduledAt {
                     scheduled.append(DatedEntry(entry: entry, kind: .scheduled, date: at, includesTime: true))
                 }
+                // eTL이 같은 것을 알고 있으면 **eTL의 날짜가 이긴다.** 브리핑에 찍힌 날짜는
+                // 그날의 기록이고, 교수가 마감을 옮기면 그 기록은 낡는다.
+                if let live = pendingETL.removeValue(forKey: item.trackingID) {
+                    if let date = live.date {
+                        deadlines.append(DatedEntry(entry: entry, kind: live.kind == .event ? .classEvent : .deadline,
+                                                    date: date, includesTime: true))
+                    }
+                    continue
+                }
                 if let parsed = KoreanDeadline.parse(item.deadline, now: now) {
                     deadlines.append(DatedEntry(entry: entry, kind: .deadline, date: parsed.date, includesTime: parsed.includesTime))
                 }
             }
+        }
+        // 브리핑에 뜬 적 없는 것. 아직 D-3에 걸리지 않은 과제가 여기 해당하고, 이것이
+        // 없으면 달력은 "며칠 뒤에야 알려 줄 마감"을 오늘 보여 주지 못한다.
+        for live in pendingETL.values.sorted(by: { ($0.date ?? .distantFuture) < ($1.date ?? .distantFuture) }) {
+            guard let date = live.date else { continue }
+            let mark = marks[live.id] ?? BriefingMark()
+            let entry = Entry(item: Self.synthesised(from: live), dateKey: days.first?.dateKey ?? "",
+                              mark: mark, isLiveOnly: true)
+            deadlines.append(DatedEntry(entry: entry, kind: live.kind == .event ? .classEvent : .deadline,
+                                        date: date, includesTime: true))
         }
         // 같은 항목의 마감과 일정이 **같은 날**이면 일정 하나만 남긴다. 사람이 확인해
         // 넣은 시각이 본문에서 읽어 낸 것보다 정확하고, 한 칸에 같은 제목이 두 줄로
@@ -897,6 +1101,7 @@ final class BriefingArchiveModel: ObservableObject {
             let answered = try await classifier.classify(
                 [rebuilt],
                 userInstructions: preferences.userInstructions,
+                academicInstructions: preferences.academicInstructions,
                 corrections: ClassificationLearning.promptBlock(from: corrections) ?? ""
             )
             await classifier.unload()
@@ -1034,7 +1239,7 @@ final class BriefingArchiveModel: ObservableObject {
 
     /// A recorded entry the user has since deleted in Calendar.app should stop
     /// claiming to exist, or the archive quietly refuses to add it back.
-    func reconcilePlacements() {
+    func reconcilePlacements() async {
         var changed = false
         var placements: [String: CalendarPlacement] = [:]
         for (id, mark) in marks {
@@ -1049,7 +1254,11 @@ final class BriefingArchiveModel: ObservableObject {
         // One store for the whole sweep, and nothing at all when permission is
         // gone — otherwise every lookup would come back empty and this would
         // quietly forget every calendar entry the user had made.
-        let gone = writer.missing(Array(placements.values))
+        // EventKit lookup cost grows with the accumulated archive. Keeping it on
+        // the main actor made merely entering this tab feel progressively heavier.
+        let values = Array(placements.values)
+        let writer = self.writer
+        let gone = await Task.detached(priority: .utility) { writer.missing(values) }.value
         guard !gone.isEmpty else { return }
         objectWillChange.send()
         for (id, placement) in placements where gone.contains(placement.identifier) {

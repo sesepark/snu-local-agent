@@ -86,14 +86,16 @@ private struct MusicRail: View {
     var body: some View {
         List(selection: $selection) {
             Section {
-                Label("검색", systemImage: "magnifyingglass").tag(MusicRailItem.search)
-                Label("좋아요", systemImage: "heart").tag(MusicRailItem.likes)
+                railButton("검색", systemImage: "magnifyingglass", item: .search)
+                railButton("좋아요", systemImage: "heart", item: .likes)
                     .badge(model.library.likedIDs.count)
-                Label("최근 재생", systemImage: "clock.arrow.circlepath").tag(MusicRailItem.recent)
-                Label("내 음악", systemImage: "internaldrive").tag(MusicRailItem.localLibrary)
+                railButton("최근 재생", systemImage: "clock.arrow.circlepath", item: .recent)
+                railButton("내 음악", systemImage: "internaldrive", item: .localLibrary)
                     .badge(model.localTrackCount)
-                Label("음원 찾기", systemImage: "waveform.badge.magnifyingglass").tag(MusicRailItem.resolve)
-                    .badge(model.tracksNeedingAsset.count)
+                if !model.usesOriginalYouTube {
+                    railButton("음원 찾기", systemImage: "waveform.badge.magnifyingglass", item: .resolve)
+                        .badge(model.tracksNeedingAsset.count)
+                }
             }
             Section("플레이리스트") {
                 ForEach(model.library.playlists) { playlist in
@@ -147,6 +149,23 @@ private struct MusicRail: View {
                 model.renamePlaylist(target.id, to: name)
             }
         }
+    }
+
+    /// `List(selection:)` alone occasionally leaves non-optional enum rows inert
+    /// on macOS. Make the row action explicit while retaining the native sidebar
+    /// selection tag and highlight.
+    private func railButton(_ title: String, systemImage: String, item: MusicRailItem) -> some View {
+        Button { selection = item } label: {
+            Label {
+                Text(title)
+            } icon: {
+                Image(systemName: systemImage).foregroundStyle(Color.accentColor)
+            }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .tag(item)
     }
 
     private struct RenameTarget: Identifiable { let id: UUID }
@@ -252,7 +271,7 @@ private struct MusicSearchScreen: View {
             } else if model.searchResults.isEmpty {
                 EmptyResults(
                     symbol: "music.note",
-                    message: "듣고 싶은 곡을 찾아보세요.\nYouTube에서 찾고, 소리는 광고 없는 음원으로 냅니다."
+                    message: "곡·아티스트를 검색하거나 YouTube 주소를 붙여 넣으세요.\n선택한 원본 영상으로 재생합니다."
                 )
                 .frame(maxHeight: .infinity)
             } else {
@@ -363,7 +382,7 @@ private struct MusicCollectionHeader: View {
                 Button("음원 찾기", systemImage: "waveform.badge.magnifyingglass") {
                     model.resolveMissing(in: tracks)
                 }
-                .disabled(unresolved == 0)
+                .disabled(unresolved == 0 || model.usesOriginalYouTube)
                 .help("광고 없이 들을 수 있는 음원을 미리 찾아 둡니다")
             }
             .toolbarKeepsTitle()
@@ -612,7 +631,11 @@ private struct MusicSourceBadge: View {
     let track: Track
 
     var body: some View {
-        if let asset = track.asset {
+        if MusicPlaybackPolicy.usesOriginalYouTube(track, enabled: model.usesOriginalYouTube) {
+            Label("YouTube 원본", systemImage: "play.rectangle")
+                .font(.caption2).foregroundStyle(.secondary)
+                .help("선택한 원본 영상에 설정의 uBlock Origin Lite 광고 차단을 적용합니다.")
+        } else if let asset = track.asset {
             Label(asset.provider.displayName, systemImage: asset.provider.symbol)
                 .font(.caption2)
                 .foregroundStyle(asset.confidence >= MusicMatching.confidentThreshold ? Color.secondary : Color.orange)
@@ -622,7 +645,7 @@ private struct MusicSourceBadge: View {
                       : "비슷한 음원으로 재생합니다: \(asset.provenance)")
         } else if track.searchedWithoutResultAt != nil {
             if model.allowsYouTubeFallback, track.origin == .youtube {
-                Label("YouTube · 광고", systemImage: "play.rectangle")
+                Label("YouTube 원본", systemImage: "play.rectangle")
                     .font(.caption2)
                     .foregroundStyle(.orange)
                     .help("광고 없는 음원을 찾지 못해 YouTube로 재생합니다. 광고가 나올 수 있습니다.")
@@ -740,13 +763,7 @@ private struct MusicQueuePanel: View {
                 VStack(alignment: .leading, spacing: Spacing.xs) {
                     YouTubeEmbedView(player: model.embed)
                         .frame(height: 200)
-                    Label(
-                        "광고 없는 음원을 찾지 못해 YouTube로 재생합니다. 이 곡에는 광고가 나올 수 있습니다.",
-                        systemImage: "exclamationmark.triangle"
-                    )
-                    .font(.caption2)
-                    .foregroundStyle(.orange)
-                    .fixedSize(horizontal: false, vertical: true)
+                    YouTubeAdBlockStatusView(adBlock: model.embed.adBlock, retry: model.embed.retryAdBlock)
                     .padding(.horizontal, Spacing.m)
                 }
                 .padding(.bottom, Spacing.s)
@@ -844,12 +861,12 @@ private struct MusicPlayerBar: View {
 
     private var statusLine: String {
         switch model.status {
-        case .resolving: "광고 없는 음원을 찾는 중…"
+        case .resolving: "재생할 음원을 확인하는 중…"
         case .failed(let message): message
         case .idle: "왼쪽에서 곡을 고르세요"
         default:
             model.route == .youtube
-                ? "YouTube로 재생 중 · 광고가 나올 수 있습니다"
+                ? "YouTube 원본 · 광고 차단 상태는 대기열에서 확인"
                 : (model.currentTrack?.availabilityNote ?? "")
         }
     }
@@ -999,7 +1016,7 @@ private struct ImportPlaylistSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.m) {
             Text("YouTube 플레이리스트 가져오기").font(.headline)
-            Text("플레이리스트 주소나 id를 넣으세요. 곡 목록과 제목만 가져오고, 재생은 광고 없는 음원으로 합니다.")
+                Text("YouTube 플레이리스트 주소나 id를 넣으세요. 목록을 가져와 선택한 원본 영상으로 재생합니다.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -1056,6 +1073,7 @@ struct MusicSettingsTab: View {
 
     var body: some View {
         Form {
+            YouTubeAdBlockSettingsView(adBlock: model.embed.adBlock, retry: model.embed.retryAdBlock)
             Section("YouTube 검색") {
                 HStack {
                     SecureField("YouTube Data API v3 키", text: $key)
@@ -1093,8 +1111,10 @@ struct MusicSettingsTab: View {
             }
 
             Section("재생") {
-                Text("YouTube는 검색과 플레이리스트에만 씁니다. 소리는 광고가 구조적으로 없는 세 곳에서만 납니다.")
+                Toggle("YouTube 원본 영상으로 바로 재생", isOn: $model.usesOriginalYouTube)
+                Text("기본값은 YouTube 원본입니다. 다른 무료 음원으로 자동 대체하지 않습니다. 직접 지정한 파일과 내 음악은 그대로 유지됩니다. 광고가 나올 수 있습니다.")
                     .font(.callout)
+                if !model.usesOriginalYouTube {
                 ForEach(PlaybackProviderKind.allCases, id: \.rawValue) { provider in
                     Label {
                         VStack(alignment: .leading, spacing: 1) {
@@ -1108,9 +1128,16 @@ struct MusicSettingsTab: View {
                 Text("셋 중 어디에서도 음원을 찾지 못했을 때 비슷한 다른 곡을 대신 틀지는 않습니다.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                }
             }
 
-            Section("찾지 못한 곡") {
+            Section("브라우저 / 확장") {
+                Text("앱 내부의 YouTube 재생에는 아래 uBlock Origin Lite 설정을 적용합니다. 외부 브라우저의 설정은 바꾸지 않습니다.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Button("YouTube 열기") { NSWorkspace.shared.open(URL(string: "https://www.youtube.com")!) }
+            }
+            if !model.usesOriginalYouTube {
+            Section("이전 음원 매칭 모드 · 찾지 못한 곡") {
                 Toggle("YouTube로 재생 (광고가 나올 수 있음)", isOn: $model.allowsYouTubeFallback)
                 Text(model.allowsYouTubeFallback
                      ? "위 세 곳에서 음원을 찾지 못한 곡만 YouTube가 공식으로 제공하는 임베드 플레이어로 재생합니다. 그 곡에는 YouTube가 붙이는 광고가 나올 수 있고, 목록과 플레이어에 `YouTube · 광고`로 표시됩니다. 광고를 막거나 영상을 가리거나 음원을 꺼내는 코드는 이 앱에 없습니다."
@@ -1120,6 +1147,7 @@ struct MusicSettingsTab: View {
                 Text("어느 쪽이든 곡에 파일을 직접 연결하면(목록의 `⋯ › 파일 직접 지정`) 그 곡은 언제나 광고 없이 재생됩니다.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
             }
 
             Section("내 음악 폴더") {

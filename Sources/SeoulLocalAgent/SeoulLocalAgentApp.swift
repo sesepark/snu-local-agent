@@ -370,6 +370,7 @@ final class AutomationController: ObservableObject {
     }
     @Published var briefingETA: TimeInterval?
     @Published var briefingUserInstructions: String
+    @Published var briefingAcademicInstructions: String
     @Published var briefingIgnoredPatternsText: String
     @Published var briefingImportantPatternsText: String
     @Published var briefingInterestPatternsText: String
@@ -453,6 +454,7 @@ final class AutomationController: ObservableObject {
     @Published var lectureOrganizationPrompt: String
     @Published var meetingOrganizationPrompt: String
     @Published var generalOrganizationPrompt: String
+    @Published var summaryModel: String
     @Published var organizationPreferencesStatus = ""
     @Published private(set) var processingQueue: [ProcessingQueueItem] = []
     @Published private(set) var activeProcessingItemID: UUID?
@@ -653,6 +655,7 @@ final class AutomationController: ObservableObject {
         let storedAuto = UserDefaults.standard.double(forKey: "lastAutoBriefingAt")
         lastAutoBriefingAt = storedAuto > 0 ? Date(timeIntervalSince1970: storedAuto) : nil
         briefingUserInstructions = briefingPreferences.userInstructions
+        briefingAcademicInstructions = briefingPreferences.academicInstructions
         briefingIgnoredPatternsText = briefingPreferences.ignoredPatterns.joined(separator: "\n")
         briefingImportantPatternsText = briefingPreferences.importantPatterns.joined(separator: "\n")
         briefingInterestPatternsText = briefingPreferences.interestPatterns.joined(separator: "\n")
@@ -711,6 +714,7 @@ final class AutomationController: ObservableObject {
         lectureOrganizationPrompt = organizationPreferences.lecturePrompt
         meetingOrganizationPrompt = organizationPreferences.meetingPrompt
         generalOrganizationPrompt = organizationPreferences.generalPrompt
+        summaryModel = organizationPreferences.model
         // The most recent briefing is whatever the archive holds, which is now
         // the real thing rather than a stub built around a Notion link.
         lastBriefing = briefingArchive.days.first
@@ -860,6 +864,7 @@ final class AutomationController: ObservableObject {
     func reloadBriefingPreferences() {
         let preferences = briefingPreferencesStore.load()
         briefingUserInstructions = preferences.userInstructions
+        briefingAcademicInstructions = preferences.academicInstructions
         briefingIgnoredPatternsText = preferences.ignoredPatterns.joined(separator: "\n")
         briefingImportantPatternsText = preferences.importantPatterns.joined(separator: "\n")
         briefingInterestPatternsText = preferences.interestPatterns.joined(separator: "\n")
@@ -869,6 +874,7 @@ final class AutomationController: ObservableObject {
         do {
             try briefingPreferencesStore.save(BriefingPreferences(
                 userInstructions: briefingUserInstructions,
+                academicInstructions: briefingAcademicInstructions,
                 ignoredPatterns: .preferenceLines(briefingIgnoredPatternsText),
                 importantPatterns: .preferenceLines(briefingImportantPatternsText),
                 interestPatterns: .preferenceLines(briefingInterestPatternsText)
@@ -882,6 +888,7 @@ final class AutomationController: ObservableObject {
 
     func resetBriefingPreferences() {
         briefingUserInstructions = BriefingPreferences.defaultInstructions
+        briefingAcademicInstructions = BriefingPreferences.defaultAcademicInstructions
         briefingIgnoredPatternsText = ""
         briefingImportantPatternsText = ""
         briefingInterestPatternsText = BriefingPreferences.defaultInterests.joined(separator: "\n")
@@ -934,7 +941,8 @@ final class AutomationController: ObservableObject {
                 detail: organizationDetailLevel,
                 lecturePrompt: lectureOrganizationPrompt,
                 meetingPrompt: meetingOrganizationPrompt,
-                generalPrompt: generalOrganizationPrompt
+                generalPrompt: generalOrganizationPrompt,
+                model: summaryModel
             ))
             organizationPreferencesStatus = "저장했습니다. 다음 AI 정리부터 적용됩니다."
         } catch { organizationPreferencesStatus = error.localizedDescription }
@@ -2029,9 +2037,10 @@ final class AutomationController: ObservableObject {
 
     func organizationPrompt(for kind: TranscriptOrganizationKind) -> String {
         switch kind {
-        case .lecture: lectureOrganizationPrompt
+        case .automatic: lectureOrganizationPrompt
+        case .lecture: lectureOrganizationPrompt + "\n사용자가 강의로 지정했다. 강의 출력 형식을 사용한다."
         case .meeting: meetingOrganizationPrompt
-        case .general: generalOrganizationPrompt
+        case .seminar, .general: generalOrganizationPrompt
         }
     }
 
@@ -3406,6 +3415,12 @@ private struct ClassificationSettingsTab: View {
                 Text("발신자·도메인·제목·본문에 포함될 문자열을 한 줄에 하나씩 입력합니다. 중요 규칙은 무시 규칙보다 우선합니다.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            Section("학업 · 과제") {
+                TextEditor(text: $controller.briefingAcademicInstructions)
+                    .font(.body.monospaced()).frame(minHeight: 140)
+                Text("과목 맥락과 실제 성적·출석 영향을 판단해 보관함의 과제 항목으로 분류합니다.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Section("관심 분야") {
                 TextEditor(text: $controller.briefingInterestPatternsText)
                     .font(.body.monospaced()).frame(minHeight: 80)
@@ -3439,6 +3454,7 @@ private struct ClassificationSettingsTab: View {
 
 private struct TranscriptionSettingsTab: View {
     @ObservedObject var controller: AutomationController
+    @StateObject private var catalog = SummaryModelCatalog()
     @State private var diarizationToken = ""
     @State private var diarizationTokenStatus = ""
 
@@ -3475,6 +3491,17 @@ private struct TranscriptionSettingsTab: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("AI 정리") {
+                Picker("자동요약 모델", selection: $controller.summaryModel) {
+                    if !catalog.models.contains(controller.summaryModel) {
+                        Text("\(controller.summaryModel) · 설치 확인 필요").tag(controller.summaryModel)
+                    }
+                    ForEach(catalog.models, id: \.self) { Text($0).tag($0) }
+                }
+                HStack {
+                    Button(catalog.isLoading ? "확인 중…" : "모델 목록 새로고침") { catalog.refresh() }
+                        .disabled(catalog.isLoading)
+                    if let error = catalog.error { Text(error).font(.caption).foregroundStyle(.orange) }
+                }
                 Toggle("전사 완료 후 자동으로 AI 정리", isOn: $controller.automaticallyOrganizeTranscripts)
                 Picker("기본 정리 유형", selection: $controller.organizationKind) {
                     ForEach(TranscriptOrganizationKind.allCases) { Text($0.title).tag($0) }
@@ -3482,15 +3509,15 @@ private struct TranscriptionSettingsTab: View {
                 Picker("상세도", selection: $controller.organizationDetailLevel) {
                     ForEach(TranscriptOrganizationDetail.allCases) { Text($0.title).tag($0) }
                 }
-                Text("브리핑과 같은 로컬 모델을 사용합니다. 긴 전사는 구간별로 정리한 뒤 원문 순서대로 통합합니다.")
+                Text("설치된 로컬 모델을 선택합니다. 다음에 대기열에 넣는 작업부터 적용됩니다.")
                     .font(.caption).foregroundStyle(.secondary)
-                DisclosureGroup("수업 정리 프롬프트") {
+                DisclosureGroup("자동 판단 / 수업 정리 프롬프트") {
                     TextEditor(text: $controller.lectureOrganizationPrompt).font(.body.monospaced()).frame(minHeight: 130)
                 }
                 DisclosureGroup("회의 정리 프롬프트") {
                     TextEditor(text: $controller.meetingOrganizationPrompt).font(.body.monospaced()).frame(minHeight: 130)
                 }
-                DisclosureGroup("일반 정리 프롬프트") {
+                DisclosureGroup("세미나 / 일반 정리 프롬프트") {
                     TextEditor(text: $controller.generalOrganizationPrompt).font(.body.monospaced()).frame(minHeight: 130)
                 }
                 HStack {
@@ -3507,6 +3534,7 @@ private struct TranscriptionSettingsTab: View {
                 .animation(.appContent, value: controller.organizationPreferencesStatus)
             }
         }
+        .onAppear { catalog.refresh() }
         .formStyle(.grouped)
     }
 }
@@ -5560,4 +5588,3 @@ private struct DictationSettingsSection: View {
         }
     }
 }
-

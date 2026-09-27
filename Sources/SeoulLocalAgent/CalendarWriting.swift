@@ -19,7 +19,7 @@ enum AgentCalendar {
 }
 
 /// A created entry, as far as the archive needs to remember it.
-struct CalendarPlacement: Equatable {
+struct CalendarPlacement: Equatable, Sendable {
     let identifier: String
     let date: Date
     let isReminder: Bool

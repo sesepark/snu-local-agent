@@ -45,6 +45,9 @@ struct AudioCleanupRequest: Sendable {
 
 struct AudioCleanupWorker: BatchToolWorker {
     let request: AudioCleanupRequest
+    var historySettings: String {
+        "\(request.method.title) · \(request.strength.title) · \(request.format.title) · 음량 보정 \(request.normalisesLoudness ? "켜짐" : "꺼짐")"
+    }
 
     /// Video is accepted and yields the cleaned soundtrack as an audio file:
     /// a lecture recorded on a phone arrives as a .mov far more often than as

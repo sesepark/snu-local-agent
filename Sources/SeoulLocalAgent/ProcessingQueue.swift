@@ -41,6 +41,7 @@ struct OrganizationQueuePayload {
     let kind: TranscriptOrganizationKind
     let detail: TranscriptOrganizationDetail
     let prompt: String
+    var model: String = AppConfig.model
 }
 
 enum ProcessingQueuePayload {

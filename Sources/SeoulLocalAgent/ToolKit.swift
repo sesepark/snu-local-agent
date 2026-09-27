@@ -443,7 +443,20 @@ struct ToolResultCard: View {
             actions
         }
         .padding(Spacing.m)
-        .contentCard()
+        .contentCard(Radius.card, selected: model.selection.contains(job.id))
+        .overlay(alignment: .topLeading) {
+            Button {
+                model.toggleSelection(job.id)
+            } label: {
+                Image(systemName: model.selection.contains(job.id) ? "checkmark.circle.fill" : "circle")
+                    .font(.title3)
+                    .foregroundStyle(model.selection.contains(job.id) ? Color.snuBlueLabel : .secondary)
+                    .padding(8)
+            }
+            .buttonStyle(.plain)
+            .help(model.selection.contains(job.id) ? "선택 해제" : "한꺼번에 저장하거나 삭제하도록 선택")
+            .accessibilityLabel(model.selection.contains(job.id) ? "선택됨" : "선택 안 됨")
+        }
         .task(id: job.output?.path ?? job.source.path) {
             preview = await ToolThumbnail.image(for: job.output ?? job.source, maxPixel: 640)
         }
@@ -535,6 +548,7 @@ struct BatchToolScreen<Settings: View>: View {
             QuickFolderBar(disabled: model.isRunning, recent: model.lastSaveFolder, choose: choose)
             settings()
             ToolStatusPanel(model: model, trailing: trailing)
+            ToolHistoryPanel(tool: model.name, isBusy: model.isRunning, retry: onURLs)
 
             if model.jobs.isEmpty {
                 EmptyResults(symbol: section.symbol, message: emptyMessage)
@@ -567,6 +581,16 @@ struct BatchToolToolbar<Primary: View, Extra: View>: ToolbarContent {
     var body: some ToolbarContent {
         ToolbarItem {
             Menu("결과", systemImage: "ellipsis") {
+                if !model.selection.isEmpty {
+                    Button("선택한 \(model.selectedFinishedCount)개 저장…", systemImage: "square.and.arrow.down.on.square") { model.saveSelected() }
+                        .disabled(model.selectedFinishedCount == 0)
+                    Button("선택한 \(model.selection.count)개 삭제", systemImage: "trash", role: .destructive) { model.deleteSelected() }
+                        .disabled(model.isRunning)
+                    Button("선택 해제", systemImage: "xmark.circle") { model.clearSelection() }
+                    Divider()
+                }
+                Button("완료 결과 모두 선택", systemImage: "checkmark.circle") { model.selectAllFinished() }
+                    .disabled(!model.hasFinished)
                 Button("모두 저장…", systemImage: "square.and.arrow.down.on.square") { model.saveAll() }
                     .disabled(!model.hasFinished)
                 Button("목록 비우기", systemImage: "trash", role: .destructive) { model.clear() }

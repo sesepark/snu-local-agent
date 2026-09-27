@@ -1,0 +1,27 @@
+name: Windows study hub
+
+on:
+  push:
+    paths:
+      - "windows/**"
+      - ".github/workflows/windows-study-hub.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Test core study flows
+        run: python -m unittest discover -s windows -p "test_*.py"
+      - name: Package desktop executable
+        run: |
+          python -m pip install pyinstaller==6.15.0
+          python -m PyInstaller --onefile --windowed --name SNUStudyHub windows/study_hub.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SNUStudyHub-Windows
+          path: dist/SNUStudyHub.exe
