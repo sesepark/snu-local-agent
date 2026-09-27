@@ -19,3 +19,5 @@ GitHub Actions의 `windows-study-hub` 워크플로는 Windows에서 테스트한
 PyInstaller로 `SNUStudyHub.exe`를 만들어 Actions artifact에 올립니다.
 Windows 실행 파일을 최종 릴리스하기 전에는 실제 Windows PC에서 eTL 로그인,
 한글 표시, 로컬 Ollama와 API 연결을 확인해야 합니다.
+
+[Windows 자동 빌드 산출물](https://github.com/sesepark/snu-local-agent/actions/workflows/windows-study-hub.yml)에서 최근 성공한 실행의 `SNUStudyHub-Windows`를 내려받을 수 있습니다.

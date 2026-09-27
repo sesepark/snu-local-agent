@@ -177,9 +177,10 @@ Mac 앱의 API 키와 eTL·Slack 토큰은 macOS Keychain에 둡니다. Windows 
 Windows 10/11에서 Python 3.11 이상을 설치한 뒤 `py -3 windows\study_hub.py`로 실행합니다.
 eTL 토큰으로 과제·마감·제출 종료 시각을 읽고, 학업 안내문을 로컬 Ollama 또는 OpenAI 호환 API로
 정리할 수 있습니다. 키와 토큰은 저장하지 않습니다. 설치 방법과 기능 범위는
-[Windows 안내](windows/README.md)에 있습니다. Windows 실행 파일은 GitHub Actions에서
-만드는 빌드 경로를 마련했으며, 실제 Windows PC에서 설치·한글 표시·연결 검증이 끝나기 전까지
-Mac판과 동일한 기능이라고 표시하지 않습니다.
+[Windows 안내](windows/README.md)에 있습니다. [Windows 자동 빌드](https://github.com/sesepark/snu-local-agent/actions/workflows/windows-study-hub.yml)에서
+`SNUStudyHub-Windows` 실행 파일 산출물을 받을 수 있습니다. CI 빌드와 테스트는 통과했으며,
+실제 Windows PC에서 eTL·한글 표시·AI 연결을 확인한 뒤 정식 릴리스로 배포하겠습니다.
+Mac판과 기능 범위는 다릅니다.
 
 ### 1. 받기 — 둘 중 하나
 

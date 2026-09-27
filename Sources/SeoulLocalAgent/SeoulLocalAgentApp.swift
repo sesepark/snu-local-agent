@@ -483,6 +483,7 @@ final class AutomationController: ObservableObject {
         didSet { UserDefaults.standard.set(Self.hex(from: cutoutCustomColor), forKey: "cutoutCustomColor") }
     }
     @Published private(set) var cutoutItems: [CutoutItem] = []
+    @Published var selectedCutoutIDs: Set<CutoutItem.ID> = []
     @Published private(set) var isRemovingBackground = false
     @Published private(set) var cutoutStatus = "사진을 넣으면 배경을 지웁니다."
     @Published var cutoutError: String?
@@ -502,10 +503,12 @@ final class AutomationController: ObservableObject {
         didSet { UserDefaults.standard.set(compressionTargetBytes, forKey: "compressionTargetBytes") }
     }
     @Published private(set) var compressionItems: [CompressionItem] = []
+    @Published var selectedCompressionIDs: Set<CompressionItem.ID> = []
     @Published private(set) var isCompressing = false
     @Published private(set) var compressionStatus = "파일을 넣고 방식과 정도를 고르세요."
     @Published private(set) var compressionETA: TimeInterval?
     @Published var compressionError: String?
+    private var compressionHistorySettings = ""
 
     // MARK: 소리 다듬기 · 화질 올리기 · 스캔 보정 · 형식 변환 · PDF 편집
 
@@ -1307,20 +1310,20 @@ final class AutomationController: ObservableObject {
             cutoutError = "누끼를 따는 중입니다. 끝나거나 중단한 뒤에 넣어 주세요."
             return
         }
-        let sources = fileURLs.filter(BackgroundRemovalService.isSupported)
+        let (sources, truncated) = ToolWorkspace.expand(fileURLs, accepting: BackgroundRemovalService.supportedExtensions)
         guard !sources.isEmpty else {
             cutoutError = "이미지 파일만 누끼를 딸 수 있습니다."
             return
         }
-        cutoutError = nil
+        cutoutError = truncated ? "한 번에 500개까지만 처리합니다. 나머지는 다시 넣어 주세요." : ToolWorkspace.rejectionMessage(fileURLs, accepting: BackgroundRemovalService.supportedExtensions)
         // A new batch replaces the old one, so say what was thrown away. Losing a
         // dozen finished cutouts to a stray drop, silently, is the worst case here.
-        let discarded = cutoutItems.filter(\.isFinished).count
         cutoutItems = sources.map { CutoutItem(source: $0) }
+        selectedCutoutIDs.removeAll()
         isRemovingBackground = true
         let model = mattingModel
         let opening = sources.count == 1 ? "배경을 지우고 있습니다." : "\(sources.count)장을 순서대로 처리하고 있습니다."
-        cutoutStatus = discarded > 0 ? "\(opening) 저장하지 않은 이전 결과 \(discarded)장은 목록에서 내렸습니다." : opening
+        cutoutStatus = opening + " 이전 결과는 지난 내역에서 볼 수 있습니다."
         cutoutTask = Task { [weak self] in
             guard let self else { return }
             let service = BackgroundRemovalService()
@@ -1328,12 +1331,16 @@ final class AutomationController: ObservableObject {
             var cancelled = false
             for (index, source) in sources.enumerated() {
                 if Task.isCancelled { cancelled = true; break }
+                let identifier = self.cutoutItems[index].id
                 self.updateCutout(at: index) { $0.state = .working("준비 중") }
                 let started = Date()
                 do {
                     let output = try await service.removeBackground(from: source, model: model) { detail in
                         Task { @MainActor [weak self] in
-                            self?.updateCutout(at: index) { $0.state = .working(detail) }
+                            guard let self, self.cutoutItems.indices.contains(index), self.cutoutItems[index].id == identifier else { return }
+                            self.updateCutout(at: index) {
+                                if case .working = $0.state { $0.state = .working(detail) }
+                            }
                         }
                     }
                     self.updateCutout(at: index) {
@@ -1358,6 +1365,15 @@ final class AutomationController: ObservableObject {
             }
             self.isRemovingBackground = false
             self.cutoutTask = nil
+            for index in self.cutoutItems.indices {
+                if !self.cutoutItems[index].isFinished, self.cutoutItems[index].output == nil {
+                    if cancelled { self.updateCutout(at: index) { if case .waiting = $0.state { $0.state = .failed("중단했습니다.") } } }
+                }
+                let item = self.cutoutItems[index]
+                ToolHistory.shared.record(.init(id: item.id, tool: "Cutout", source: item.source, output: item.output,
+                    saveName: Self.cutoutFileName(for: item), settings: model.title + " · 투명 PNG",
+                    detail: item.isFinished ? "배경 제거 완료 · 투명 원본" : String(describing: item.state), succeeded: item.isFinished))
+            }
         }
     }
 
@@ -1366,6 +1382,7 @@ final class AutomationController: ObservableObject {
     func clearCutouts() {
         guard !isRemovingBackground else { return }
         cutoutItems = []
+        selectedCutoutIDs.removeAll()
         cutoutError = nil
         cutoutStatus = "사진을 드롭하면 배경을 지운 PNG를 만듭니다."
     }
@@ -1450,6 +1467,7 @@ final class AutomationController: ObservableObject {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
             try data.write(to: url, options: .atomic)
+            ToolHistory.shared.markSaved(id: item.id, at: url)
             cutoutStatus = "저장했습니다: \(url.lastPathComponent)"
         } catch {
             cutoutError = "저장하지 못했습니다: \(error.localizedDescription)"
@@ -1457,10 +1475,17 @@ final class AutomationController: ObservableObject {
     }
 
     func saveAllCutouts() {
-        let finished = cutoutItems.filter(\.isFinished)
+        saveCutouts(cutoutItems.filter(\.isFinished), title: "누끼 이미지를 저장할 폴더 선택")
+    }
+
+    func saveSelectedCutouts() {
+        saveCutouts(cutoutItems.filter { selectedCutoutIDs.contains($0.id) && $0.isFinished }, title: "선택한 누끼 이미지를 저장할 폴더 선택")
+    }
+
+    private func saveCutouts(_ finished: [CutoutItem], title: String) {
         guard !finished.isEmpty else { return }
         let panel = NSOpenPanel()
-        panel.title = "누끼 이미지를 저장할 폴더 선택"
+        panel.title = title
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
@@ -1474,6 +1499,7 @@ final class AutomationController: ObservableObject {
             let target = CompressionWorkspace.uniqueURL(in: directory, name: Self.cutoutFileName(for: item))
             do {
                 try data.write(to: target, options: .atomic)
+                ToolHistory.shared.markSaved(id: item.id, at: target)
                 saved += 1
             } catch {
                 cutoutError = "저장하지 못했습니다: \(error.localizedDescription)"
@@ -1481,6 +1507,22 @@ final class AutomationController: ObservableObject {
         }
         cutoutStatus = "\(saved)장을 저장했습니다: \(directory.lastPathComponent)"
         NSWorkspace.shared.activateFileViewerSelecting([directory])
+    }
+
+    func toggleCutoutSelection(_ id: CutoutItem.ID) {
+        if selectedCutoutIDs.contains(id) { selectedCutoutIDs.remove(id) } else { selectedCutoutIDs.insert(id) }
+    }
+
+    func selectAllCutouts() { selectedCutoutIDs = Set(cutoutItems.filter(\.isFinished).map(\.id)) }
+
+    func deleteSelectedCutouts() {
+        guard !isRemovingBackground, !selectedCutoutIDs.isEmpty else { return }
+        let removing = cutoutItems.filter { selectedCutoutIDs.contains($0.id) }
+        for output in removing.compactMap(\.output) { try? FileManager.default.removeItem(at: output) }
+        cutoutItems.removeAll { selectedCutoutIDs.contains($0.id) }
+        let count = removing.count
+        selectedCutoutIDs.removeAll()
+        cutoutStatus = "선택한 \(count)개 결과를 삭제했습니다. 원본은 그대로입니다."
     }
 
     private static func cutoutFileName(for item: CutoutItem) -> String {
@@ -1568,7 +1610,7 @@ final class AutomationController: ObservableObject {
             compressionError = "사진·PDF·영상 파일만 압축할 수 있습니다."
             return
         }
-        compressionError = truncated ? "한 번에 500개까지만 처리합니다. 나머지는 다시 넣어 주세요." : nil
+        compressionError = truncated ? "한 번에 500개까지만 처리합니다. 나머지는 다시 넣어 주세요." : ToolWorkspace.rejectionMessage(fileURLs, accepting: CompressionKind.imageExtensions.union(["pdf"]).union(MediaImporter.videoExtensions))
         compressionItems = files.map {
             CompressionItem(
                 source: $0,
@@ -1577,6 +1619,7 @@ final class AutomationController: ObservableObject {
                 originalDetail: ""
             )
         }
+        selectedCompressionIDs.removeAll()
         startCompressionRun()
     }
 
@@ -1588,7 +1631,9 @@ final class AutomationController: ObservableObject {
     /// sit at 대기 중 forever.
     func recompress() {
         guard !isCompressing, !compressionItems.isEmpty else { return }
+        selectedCompressionIDs.removeAll()
         for index in compressionItems.indices {
+            compressionItems[index].id = UUID()
             compressionItems[index].state = .waiting
             compressionItems[index].output = nil
             compressionItems[index].compressedBytes = nil
@@ -1601,6 +1646,7 @@ final class AutomationController: ObservableObject {
 
     private func startCompressionRun() {
         let request = compressionRequest
+        compressionHistorySettings = "\(compressionMode.title) · \(compressionLevel.title) · \(compressionImageFormat.title) · \(compressionVideoCodec.title) · 목표 \(CompressionFormat.bytes(compressionTargetBytes))"
         let total = compressionItems.count
         compressionEstimator = CompressionProgressEstimator()
         compressionETA = nil
@@ -1716,6 +1762,7 @@ final class AutomationController: ObservableObject {
                     // These hops are unstructured, so one can land after the
                     // file has already finished; without the guard a late report
                     // would flip a completed card back to "처리 중".
+                    guard self.compressionItems.indices.contains(index), self.compressionItems[index].id == identifier else { return }
                     self.updateCompression(at: index) {
                         if case .working = $0.state { $0.state = .working(fraction) }
                     }
@@ -1740,10 +1787,22 @@ final class AutomationController: ObservableObject {
             updateCompression(at: index) { $0.state = .failed(error.localizedDescription) }
             compressionEstimator.drop(id: identifier)
         }
+        let completed = compressionItems[index]
+        ToolHistory.shared.record(.init(id: completed.id, tool: "Compress", source: completed.source, output: completed.output,
+            saveName: CompressionWorkspace.saveName(for: completed), settings: compressionHistorySettings,
+            detail: "\(completed.specText) · \(completed.statusText)", succeeded: completed.isFinished))
         refreshCompressionETA(force: true)
     }
 
     private func finishCompression(total: Int) {
+        for index in compressionItems.indices {
+            if case .waiting = compressionItems[index].state { compressionItems[index].state = .skipped("중단했습니다.") }
+        }
+        ToolHistory.shared.record(compressionItems.map { item in
+            .init(id: item.id, tool: "Compress", source: item.source, output: item.output,
+                saveName: CompressionWorkspace.saveName(for: item), settings: compressionHistorySettings,
+                detail: "\(item.specText) · \(item.statusText)", succeeded: item.isFinished)
+        })
         let succeeded = compressionItems.filter(\.isFinished).count
         if Task.isCancelled {
             compressionStatus = "용량 줄이기를 중단했습니다."
@@ -1762,7 +1821,7 @@ final class AutomationController: ObservableObject {
         compressionStatus = "중단하는 중"
         compressionTask?.cancel()
         // ffmpeg is the only helper here that runs long enough to need chasing.
-        ActiveProcessRegistry.shared.terminateProcesses(containing: "-progress")
+        // FFmpegHandle's cancellation handler terminates only this encode.
     }
 
     private func updateCompression(at index: Int, _ change: (inout CompressionItem) -> Void) {
@@ -1793,8 +1852,8 @@ final class AutomationController: ObservableObject {
         if let folder = lastCompressionSaveFolder { panel.directoryURL = folder }
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
-            try? FileManager.default.removeItem(at: url)
-            try FileManager.default.copyItem(at: output, to: url)
+            try LocalFileStorage.copyPreservingDestination(output, to: url)
+            ToolHistory.shared.markSaved(id: item.id, at: url)
             lastCompressionSaveFolder = url.deletingLastPathComponent()
             compressionStatus = "저장했습니다: \(url.lastPathComponent)"
         } catch {
@@ -1803,10 +1862,17 @@ final class AutomationController: ObservableObject {
     }
 
     func saveAllCompressed() {
-        let finished = compressionItems.filter(\.isFinished)
+        saveCompressed(compressionItems.filter(\.isFinished), title: "압축한 파일을 저장할 폴더 선택")
+    }
+
+    func saveSelectedCompressed() {
+        saveCompressed(compressionItems.filter { selectedCompressionIDs.contains($0.id) && $0.isFinished }, title: "선택한 파일을 저장할 폴더 선택")
+    }
+
+    private func saveCompressed(_ finished: [CompressionItem], title: String) {
         guard !finished.isEmpty else { return }
         let panel = NSOpenPanel()
-        panel.title = "압축한 파일을 저장할 폴더 선택"
+        panel.title = title
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
@@ -1819,6 +1885,7 @@ final class AutomationController: ObservableObject {
             let target = CompressionWorkspace.uniqueURL(in: directory, name: CompressionWorkspace.saveName(for: item))
             do {
                 try FileManager.default.copyItem(at: output, to: target)
+                ToolHistory.shared.markSaved(id: item.id, at: target)
                 saved += 1
             } catch {
                 compressionError = "저장하지 못했습니다: \(error.localizedDescription)"
@@ -1827,6 +1894,22 @@ final class AutomationController: ObservableObject {
         lastCompressionSaveFolder = directory
         compressionStatus = "\(saved)개를 저장했습니다: \(directory.lastPathComponent)"
         NSWorkspace.shared.activateFileViewerSelecting([directory])
+    }
+
+    func toggleCompressionSelection(_ id: CompressionItem.ID) {
+        if selectedCompressionIDs.contains(id) { selectedCompressionIDs.remove(id) } else { selectedCompressionIDs.insert(id) }
+    }
+
+    func selectAllCompressed() { selectedCompressionIDs = Set(compressionItems.filter(\.isFinished).map(\.id)) }
+
+    func deleteSelectedCompressed() {
+        guard !isCompressing, !selectedCompressionIDs.isEmpty else { return }
+        let removing = compressionItems.filter { selectedCompressionIDs.contains($0.id) }
+        for output in removing.compactMap(\.output) { try? FileManager.default.removeItem(at: output) }
+        compressionItems.removeAll { selectedCompressionIDs.contains($0.id) }
+        let count = removing.count
+        selectedCompressionIDs.removeAll()
+        compressionStatus = "선택한 \(count)개 결과를 삭제했습니다. 원본은 그대로입니다."
     }
 
     /// Two photos from different folders can share a name, and a batch save must
@@ -1850,6 +1933,7 @@ final class AutomationController: ObservableObject {
     func clearCompression() {
         guard !isCompressing else { return }
         compressionItems = []
+        selectedCompressionIDs.removeAll()
         compressionError = nil
         compressionStatus = "사진·PDF·영상을 넣으면 이 Mac에서 용량을 줄입니다."
     }
@@ -2039,8 +2123,9 @@ final class AutomationController: ObservableObject {
         switch kind {
         case .automatic: lectureOrganizationPrompt
         case .lecture: lectureOrganizationPrompt + "\n사용자가 강의로 지정했다. 강의 출력 형식을 사용한다."
-        case .meeting: meetingOrganizationPrompt
-        case .seminar, .general: generalOrganizationPrompt
+        case .meeting: meetingOrganizationPrompt + "\n사용자가 회의로 지정했다. 회의 출력 형식을 사용한다."
+        case .seminar: generalOrganizationPrompt + "\n사용자가 세미나로 지정했다. 세미나 출력 형식을 사용한다."
+        case .general: generalOrganizationPrompt
         }
     }
 
@@ -2059,7 +2144,7 @@ final class AutomationController: ObservableObject {
             id: UUID(),
             kind: .organization,
             title: recordingTitle,
-            detail: "\(organizationKind.title) · \(organizationDetailLevel.title)",
+            detail: "\(organizationKind.title) · \(organizationDetailLevel.title) · \(summaryModel)",
             enqueuedAt: Date()
         )
         let payload = OrganizationQueuePayload(
@@ -2067,7 +2152,8 @@ final class AutomationController: ObservableObject {
             recordingTitle: recordingTitle,
             kind: organizationKind,
             detail: organizationDetailLevel,
-            prompt: organizationPrompt(for: organizationKind)
+            prompt: organizationPrompt(for: organizationKind),
+            model: summaryModel
         )
         processingQueueState.enqueue(.init(item: item, payload: .organization(payload)))
         processingQueue = processingQueueState.items
@@ -2094,7 +2180,7 @@ final class AutomationController: ObservableObject {
         let kind = payload.kind
         let detailLevel = payload.detail
         let prompt = payload.prompt
-        let organizer = TranscriptOrganizer()
+        let organizer = TranscriptOrganizer(model: payload.model)
         defer {
             isOrganizingTranscript = false
             organizationETA = nil
@@ -2114,7 +2200,7 @@ final class AutomationController: ObservableObject {
             let organization = TranscriptOrganizationRun(
                 id: UUID(), transcriptRunID: run.id, createdAt: startedAt, completedAt: completedAt,
                 duration: completedAt.timeIntervalSince(startedAt), kind: kind, detail: detailLevel,
-                model: AppConfig.model, promptSnapshot: prompt, text: text
+                model: payload.model, promptSnapshot: prompt, text: text
             )
             if run.recordingID.hasPrefix("ocr:") {
                 // Recognised text is not a recording, so it gets no archive entry;
@@ -3185,15 +3271,13 @@ private struct SettingsWindow: View {
 }
 
 private struct BriefingSettingsTab: View {
-    /// Read once per launch: the pane is rebuilt on every keystroke and must not
-    /// touch the disk each time.
-    private static let webNoticeSiteCount = WebNoticeConfiguration.load().filter(\.enabled).count
     @ObservedObject var controller: AutomationController
     @AppStorage("slackMentionUserID") private var slackMentionUserID = ""
+    @State private var webNoticeSites = WebNoticeConfiguration.load()
+    @State private var showsWebNoticeEditor = false
 
     var body: some View {
         Form {
-            InferenceLocationSection()
             Section("수집") {
                 Picker("수집 범위", selection: $controller.selectedRange) {
                     ForEach(CollectionRange.allCases) { Text($0.rawValue).tag($0) }
@@ -3238,14 +3322,27 @@ private struct BriefingSettingsTab: View {
                 IntegrationStatusRow(
                     symbol: "globe",
                     title: "웹 공지",
-                    detail: "학교 공지 게시판 \(Self.webNoticeSiteCount)곳 · 공개 페이지만 읽음",
+                    detail: "학교 공지 게시판 \(webNoticeSites.filter(\.enabled).count)곳 · 공개 페이지만 읽음",
                     status: ""
                 ) {
-                    Button("목록 편집") {
-                        NSWorkspace.shared.activateFileViewerSelecting([WebNoticeConfiguration.url])
+                    Button("목록 관리") { showsWebNoticeEditor = true }
+                    .buttonStyle(.borderless)
+                    .help("앱 안에서 웹 공지 게시판을 추가하거나 끕니다")
+                }
+                IntegrationStatusRow(
+                    symbol: "graduationcap",
+                    title: "eTL",
+                    detail: "이번 학기 과목의 공지 · 과제 마감 · 미제출 · 쪽지 · 수업 일정 · 읽기 전용",
+                    status: ""
+                ) {
+                    Button("토큰 넣기") {
+                        // 토큰은 화면에서 받지 않는다. 값이 셸 기록에도 남지 않는 명령을
+                        // 복사해 주고, 실제로 넣는 일은 연결 상태 탭이 안내한다.
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(ETLConfiguration.tokenCommand, forType: .string)
                     }
                     .buttonStyle(.borderless)
-                    .help("web-notices.json을 Finder에서 엽니다")
+                    .help("Keychain에 토큰을 넣는 명령을 복사합니다. 붙여 넣고 실행하면 토큰을 화면에 보이지 않게 입력받습니다.")
                 }
                 IntegrationStatusRow(symbol: "calendar", title: "캘린더 · 미리 알림", detail: "앞으로 14일 일정 읽기 · 전용 캘린더와 목록에만 쓰기", status: "")
                 Text("캘린더 일정은 인박스 정리에 일정 맥락으로 포함됩니다. 앱이 만드는 일정과 미리 알림은 전부 '\(AgentCalendar.title)' 이름의 전용 캘린더·목록에만 들어가며, 원래 쓰던 캘린더의 일정은 만들거나 고치거나 지우지 않습니다. 지금 각 소스에 실제로 닿는지는 **연결 상태** 탭에서 점검합니다.")
@@ -3253,6 +3350,181 @@ private struct BriefingSettingsTab: View {
             }
         }
         .formStyle(.grouped)
+        .onAppear { webNoticeSites = WebNoticeConfiguration.load() }
+        .sheet(isPresented: $showsWebNoticeEditor) {
+            WebNoticeSettingsSheet(sites: webNoticeSites) { saved in
+                webNoticeSites = saved
+            }
+        }
+    }
+}
+
+/// The public-board list used by automatic briefings. It used to be reachable
+/// only as a JSON file in Finder, which made adding one require knowing the file
+/// shape and hand-writing an encoded URL. This sheet keeps that file as the
+/// storage format while making the ordinary path entirely in-app.
+private struct WebNoticeSettingsSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var sites: [WebNoticeSite]
+    @State private var showsAddSite = false
+    @State private var errorMessage: String?
+    let onSave: ([WebNoticeSite]) -> Void
+
+    init(sites: [WebNoticeSite], onSave: @escaping ([WebNoticeSite]) -> Void) {
+        _sites = State(initialValue: sites)
+        self.onSave = onSave
+    }
+
+    private var builtInIDs: Set<String> { Set(WebNoticeCatalog.defaults.map(\.id)) }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    ForEach($sites) { $site in
+                        HStack(alignment: .top, spacing: Spacing.m) {
+                            Toggle("", isOn: $site.enabled)
+                                .labelsHidden()
+                                .help(site.enabled ? "이 게시판을 브리핑에서 제외" : "이 게시판을 브리핑에 포함")
+                            VStack(alignment: .leading, spacing: Spacing.xs) {
+                                Text(site.name)
+                                Text(site.url.absoluteString.removingPercentEncoding ?? site.url.absoluteString)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                Text(site.interest == .direct ? "모든 새 공지" : "지원 가능한 프로그램 위주")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                            }
+                            Spacer(minLength: Spacing.s)
+                            if !builtInIDs.contains(site.id) {
+                                Button(role: .destructive) {
+                                    sites.removeAll { $0.id == site.id }
+                                } label: {
+                                    Image(systemName: "trash")
+                                }
+                                .buttonStyle(.borderless)
+                                .help("이 게시판 삭제")
+                            }
+                        }
+                        .padding(.vertical, Spacing.xs)
+                    }
+                } header: {
+                    Text("\(sites.filter(\.enabled).count)곳 사용 중")
+                } footer: {
+                    Text("새 게시판은 다음 브리핑에서 현재 목록을 기준선으로 저장하고, 그다음 실행부터 새 글만 보고합니다. 기본 게시판은 끌 수 있고, 직접 추가한 게시판은 삭제할 수 있습니다.")
+                }
+            }
+            .navigationTitle("웹 공지 목록")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("취소") { dismiss() }
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        showsAddSite = true
+                    } label: {
+                        Label("게시판 추가", systemImage: "plus")
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("저장") { save() }
+                }
+            }
+        }
+        .frame(width: 660, height: 520)
+        .sheet(isPresented: $showsAddSite) {
+            AddWebNoticeSiteSheet(existingIDs: Set(sites.map(\.id))) { site in
+                sites.append(site)
+            }
+        }
+        .alert("웹 공지 목록을 저장하지 못했습니다", isPresented: Binding(
+            get: { errorMessage != nil },
+            set: { if !$0 { errorMessage = nil } }
+        )) {
+            Button("확인", role: .cancel) {}
+        } message: {
+            Text(errorMessage ?? "알 수 없는 오류입니다.")
+        }
+    }
+
+    private func save() {
+        do {
+            try WebNoticeConfiguration.save(sites)
+            onSave(sites)
+            dismiss()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+}
+
+private struct AddWebNoticeSiteSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var name = ""
+    @State private var pageAddress = ""
+    @State private var feedAddress = ""
+    @State private var interest: WebNoticeInterest = .direct
+    @State private var errorMessage: String?
+    let existingIDs: Set<String>
+    let onAdd: (WebNoticeSite) -> Void
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("게시판") {
+                    TextField("이름", text: $name, prompt: Text("예: 전기·정보공학부"))
+                    TextField("목록 페이지 주소", text: $pageAddress, prompt: Text("https://example.edu/notices"))
+                    TextField("RSS 또는 Atom 주소 (선택)", text: $feedAddress, prompt: Text("https://example.edu/feed"))
+                    Text("RSS/Atom 주소가 있으면 더 빠르고 안정적으로 읽고, 없으면 목록 페이지에서 공지 링크를 찾습니다.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Section("포함할 공지") {
+                    Picker("대상", selection: $interest) {
+                        Text("모든 새 공지").tag(WebNoticeInterest.direct)
+                        Text("지원 가능한 프로그램 위주").tag(WebNoticeInterest.programsOnly)
+                    }
+                    Text(interest == .direct
+                         ? "내 소속 게시판이나 학교 전체 기관처럼 모든 글을 분류 모델에 보냅니다."
+                         : "다른 단과대 게시판처럼 내부 행정 공지는 줄이고, 모집·신청·장학 등 참여할 수 있는 글을 중심으로 보냅니다.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                if let errorMessage {
+                    Section { Text(errorMessage).foregroundStyle(.red) }
+                }
+            }
+            .formStyle(.grouped)
+            .navigationTitle("웹 게시판 추가")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("취소") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("추가") { add() }
+                        .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                  || pageAddress.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+        }
+        .frame(width: 520, height: 390)
+    }
+
+    private func add() {
+        do {
+            let site = try WebNoticeConfiguration.site(
+                name: name,
+                pageAddress: pageAddress,
+                feedAddress: feedAddress,
+                interest: interest
+            )
+            guard !existingIDs.contains(site.id) else {
+                throw WebNoticeConfigurationError.duplicateAddress
+            }
+            onAdd(site)
+            dismiss()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 }
 
@@ -3535,6 +3807,10 @@ private struct TranscriptionSettingsTab: View {
             }
         }
         .onAppear { catalog.refresh() }
+        .onChange(of: controller.summaryModel) { controller.saveOrganizationPreferences() }
+        .onChange(of: controller.automaticallyOrganizeTranscripts) { controller.saveOrganizationPreferences() }
+        .onChange(of: controller.organizationKind) { controller.saveOrganizationPreferences() }
+        .onChange(of: controller.organizationDetailLevel) { controller.saveOrganizationPreferences() }
         .formStyle(.grouped)
     }
 }
@@ -3694,6 +3970,8 @@ private struct TranscriptionView: View {
         .toolbar {
             ToolbarItem {
                 Menu("보관함", systemImage: "ellipsis") {
+                    Button("Finder에서 파일 선택해 전사…", systemImage: "folder") { chooseFilesForTranscription() }
+                    Divider()
                     Button("새로 고침", systemImage: "arrow.clockwise") { controller.refreshRecordings() }
                     Button("Voice Memos 폴더 연결…", systemImage: "folder.badge.plus") { controller.chooseVoiceMemosFolder() }
                 } 
@@ -3754,6 +4032,17 @@ private struct TranscriptionView: View {
     }
 
     // MARK: 넣기
+
+    private func chooseFilesForTranscription() {
+        let panel = NSOpenPanel()
+        panel.title = "전사할 오디오 또는 영상 선택"
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = true
+        panel.allowedContentTypes = [.audio, .movie]
+        guard panel.runModal() == .OK else { return }
+        for url in panel.urls { controller.transcribe(fileURL: url) }
+    }
 
     private var dropWell: some View {
         VStack(spacing: Spacing.s) {
@@ -4864,12 +5153,23 @@ private struct CutoutView: View {
                     }
                 }
             }
+            ToolHistoryPanel(tool: "Cutout", isBusy: controller.isRemovingBackground) { controller.removeBackground(fileURLs: $0) }
         }
         .animation(.appContent, value: controller.cutoutItems.map(\.id))
         .animation(.appContent, value: controller.cutoutError)
         .toolbar {
             ToolbarItem {
                 Menu("결과", systemImage: "ellipsis") {
+                    if !controller.selectedCutoutIDs.isEmpty {
+                        Button("선택한 결과 저장…", systemImage: "square.and.arrow.down.on.square") { controller.saveSelectedCutouts() }
+                            .disabled(!controller.cutoutItems.contains { controller.selectedCutoutIDs.contains($0.id) && $0.isFinished })
+                        Button("선택한 \(controller.selectedCutoutIDs.count)개 삭제", systemImage: "trash", role: .destructive) { controller.deleteSelectedCutouts() }
+                            .disabled(controller.isRemovingBackground)
+                        Button("선택 해제", systemImage: "xmark.circle") { controller.selectedCutoutIDs.removeAll() }
+                        Divider()
+                    }
+                    Button("완료 결과 모두 선택", systemImage: "checkmark.circle") { controller.selectAllCutouts() }
+                        .disabled(!controller.cutoutItems.contains(where: \.isFinished))
                     Button("모두 저장…", systemImage: "square.and.arrow.down.on.square") { controller.saveAllCutouts() }
                         .disabled(!controller.cutoutItems.contains(where: \.isFinished))
                     Button("목록 비우기", systemImage: "trash", role: .destructive) { controller.clearCutouts() }
@@ -5056,7 +5356,17 @@ private struct CutoutCard: View {
             }
         }
         .padding(Spacing.m)
-        .contentCard()
+        .contentCard(Radius.card, selected: controller.selectedCutoutIDs.contains(item.id))
+        .overlay(alignment: .topLeading) {
+            Button { controller.toggleCutoutSelection(item.id) } label: {
+                Image(systemName: controller.selectedCutoutIDs.contains(item.id) ? "checkmark.circle.fill" : "circle")
+                    .font(.title3)
+                    .foregroundStyle(controller.selectedCutoutIDs.contains(item.id) ? Color.snuBlueLabel : .secondary)
+                    .padding(8)
+            }
+            .buttonStyle(.plain)
+            .help("한꺼번에 저장하거나 삭제하도록 선택")
+        }
         .task(id: previewKey) { await loadPreview() }
         .sheet(isPresented: $showsEditor) {
             PhotoEditorSheet(
@@ -5132,6 +5442,7 @@ private struct FileCompressionView: View {
             quickFolders
             settings
             statusLine
+            ToolHistoryPanel(tool: "Compress", isBusy: controller.isCompressing) { controller.compress(fileURLs: $0) }
 
             if controller.compressionItems.isEmpty {
                 EmptyResults(symbol: "arrow.down.right.and.arrow.up.left", message: "아직 줄인 파일이 없습니다.\n위에 파일을 드롭하거나 툴바에서 사진 앱·파일을 고르세요.")
@@ -5153,6 +5464,16 @@ private struct FileCompressionView: View {
         .toolbar {
             ToolbarItem {
                 Menu("결과", systemImage: "ellipsis") {
+                    if !controller.selectedCompressionIDs.isEmpty {
+                        Button("선택한 결과 저장…", systemImage: "square.and.arrow.down.on.square") { controller.saveSelectedCompressed() }
+                            .disabled(!controller.compressionItems.contains { controller.selectedCompressionIDs.contains($0.id) && $0.isFinished })
+                        Button("선택한 \(controller.selectedCompressionIDs.count)개 삭제", systemImage: "trash", role: .destructive) { controller.deleteSelectedCompressed() }
+                            .disabled(controller.isCompressing)
+                        Button("선택 해제", systemImage: "xmark.circle") { controller.selectedCompressionIDs.removeAll() }
+                        Divider()
+                    }
+                    Button("완료 결과 모두 선택", systemImage: "checkmark.circle") { controller.selectAllCompressed() }
+                        .disabled(!controller.compressionItems.contains(where: \.isFinished))
                     Button("모두 저장…", systemImage: "square.and.arrow.down.on.square") { controller.saveAllCompressed() }
                         .disabled(!controller.compressionItems.contains(where: \.isFinished))
                     Button("목록 비우기", systemImage: "trash", role: .destructive) { controller.clearCompression() }
@@ -5463,7 +5784,17 @@ private struct CompressionCard: View {
             actions
         }
         .padding(Spacing.m)
-        .contentCard()
+        .contentCard(Radius.card, selected: controller.selectedCompressionIDs.contains(item.id))
+        .overlay(alignment: .topLeading) {
+            Button { controller.toggleCompressionSelection(item.id) } label: {
+                Image(systemName: controller.selectedCompressionIDs.contains(item.id) ? "checkmark.circle.fill" : "circle")
+                    .font(.title3)
+                    .foregroundStyle(controller.selectedCompressionIDs.contains(item.id) ? Color.snuBlueLabel : .secondary)
+                    .padding(8)
+            }
+            .buttonStyle(.plain)
+            .help("한꺼번에 저장하거나 삭제하도록 선택")
+        }
         .task(id: previewKey) { await loadPreview() }
         .sheet(isPresented: $showsEditor) {
             PhotoEditorSheet(
