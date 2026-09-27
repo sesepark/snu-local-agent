@@ -8,7 +8,10 @@ APP_DIR="$PROJECT_DIR/dist/SeoulLocalAgent.app"
 ICONSET="$PROJECT_DIR/dist/SeoulLocalAgent.iconset"
 
 cd "$PROJECT_DIR"
-/usr/bin/swift build -c release
+if [[ -z "${DEVELOPER_DIR:-}" && -d /Applications/Xcode.app/Contents/Developer ]]; then
+  export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+fi
+/usr/bin/swift build -c release -j 2
 /bin/rm -rf "$APP_DIR"
 /bin/rm -rf "$ICONSET"
 /bin/mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
@@ -47,8 +50,8 @@ done
     <key>NSAllowsLocalNetworking</key><true/>
   </dict>
   <key>LSMinimumSystemVersion</key><string>26.0</string>
-  <key>CFBundleShortVersionString</key><string>1.1</string>
-  <key>CFBundleVersion</key><string>2</string>
+  <key>CFBundleShortVersionString</key><string>1.2</string>
+  <key>CFBundleVersion</key><string>3</string>
 </dict></plist>
 PLIST
 /usr/bin/codesign --force --sign - "$APP_DIR"

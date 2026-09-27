@@ -448,10 +448,22 @@ extension ConnectionProbe {
                     detail: "학기 사이라 아직 과목이 열리지 않았을 수 있습니다. 학기 중인데도 비어 있다면 토큰이 다른 계정의 것입니다."
                 )
             }
+            var lines = [courses.map(\.shortName).joined(separator: ", ")]
+            let snapshot = ETLDeadlineSnapshot.load()
+            if snapshot.updatedAt > .distantPast {
+                let open = snapshot.entries.filter { $0.kind == .assignment && !$0.isSettled && $0.dueAt != nil }
+                let missing = open.filter(\.isMissing).count
+                let events = snapshot.entries.filter { $0.kind == .event }.count
+                let when = snapshot.updatedAt.formatted(date: .abbreviated, time: .shortened)
+                var counted = "마지막 수집(\(when)) 기준 · 남은 과제 \(open.count)건"
+                if missing > 0 { counted += " · 미제출 \(missing)건" }
+                if events > 0 { counted += " · 수업 일정 \(events)건" }
+                lines.append(counted)
+            }
             return ConnectionCheck(
                 id: etlID, title: "eTL", symbol: "graduationcap", state: .ok,
                 summary: "\(ETLSemester.name(of: courses)) · \(courses.count)과목 · 읽기 전용으로 응답합니다.",
-                detail: courses.map(\.shortName).joined(separator: ", ")
+                detail: lines.joined(separator: "\n")
             )
         } catch {
             let message = Self.firstLine(of: error.localizedDescription)
@@ -510,11 +522,13 @@ final class ConnectionHealthModel: ObservableObject {
     @Published var status = ""
 
     private var task: Task<Void, Never>?
+    private var lastAutomaticCheckStartedAt: Date?
+
+    static let automaticCheckCooldown: TimeInterval = 5 * 60
 
     var problemCount: Int { checks.filter { $0.state == .failed || $0.state == .warning }.count }
 
-    /// Nothing runs on its own: opening the pane does not start network traffic
-    /// or spawn `gog`, both of which are things the user should ask for.
+    /// A manual refresh bypasses the automatic pane-entry cooldown.
     func check() {
         guard !isChecking else { return }
         isChecking = true
@@ -531,6 +545,14 @@ final class ConnectionHealthModel: ObservableObject {
             }
             self?.finish()
         }
+    }
+
+    func checkOnPaneEntry(now: Date = Date()) {
+        guard !isChecking else { return }
+        let mostRecent = [lastAutomaticCheckStartedAt, lastCheckedAt].compactMap { $0 }.max()
+        guard mostRecent.map({ now.timeIntervalSince($0) >= Self.automaticCheckCooldown }) ?? true else { return }
+        lastAutomaticCheckStartedAt = now
+        check()
     }
 
     /// Re-reads only what the operating system can answer without any I/O, for

@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import CoreImage
 
 // MARK: - 색
 
@@ -13,17 +14,40 @@ import AppKit
 /// put white button labels on, so the fill and the label need different values.
 extension NSColor {
     /// Behind white text: prominent buttons, progress bars, selection.
-    static let snuBlueFill = NSColor(name: "snuBlueFill") { appearance in
-        appearance.isDark
-            ? NSColor(srgbRed: 0.20, green: 0.45, blue: 0.85, alpha: 1)
-            : NSColor(srgbRed: 0.05, green: 0.24, blue: 0.54, alpha: 1)
+    static var snuBlueFill: NSColor {
+        AppAccent.saved.fillColor
     }
 
     /// Coloured text and icons sitting directly on the window background.
-    static let snuBlueLabel = NSColor(name: "snuBlueLabel") { appearance in
-        appearance.isDark
-            ? NSColor(srgbRed: 0.45, green: 0.68, blue: 1.00, alpha: 1)
-            : NSColor(srgbRed: 0.05, green: 0.24, blue: 0.54, alpha: 1)
+    static var snuBlueLabel: NSColor {
+        AppAccent.saved.labelColor
+    }
+}
+
+extension AppAccent {
+    var color: Color { Color(nsColor: fillColor) }
+    var label: Color { Color(nsColor: labelColor) }
+
+    fileprivate var fillColor: NSColor {
+        switch self {
+        case .blue: NSColor(name: "appAccentBlueFill") { $0.isDark ? .init(srgbRed: 0.20, green: 0.45, blue: 0.85, alpha: 1) : .init(srgbRed: 0.05, green: 0.24, blue: 0.54, alpha: 1) }
+        case .teal: NSColor(name: "appAccentTealFill") { $0.isDark ? .init(srgbRed: 0.10, green: 0.58, blue: 0.62, alpha: 1) : .init(srgbRed: 0.00, green: 0.40, blue: 0.43, alpha: 1) }
+        case .green: NSColor(name: "appAccentGreenFill") { $0.isDark ? .init(srgbRed: 0.24, green: 0.62, blue: 0.34, alpha: 1) : .init(srgbRed: 0.08, green: 0.43, blue: 0.18, alpha: 1) }
+        case .purple: NSColor(name: "appAccentPurpleFill") { $0.isDark ? .init(srgbRed: 0.57, green: 0.39, blue: 0.84, alpha: 1) : .init(srgbRed: 0.36, green: 0.18, blue: 0.62, alpha: 1) }
+        case .orange: NSColor(name: "appAccentOrangeFill") { $0.isDark ? .init(srgbRed: 0.88, green: 0.43, blue: 0.12, alpha: 1) : .init(srgbRed: 0.68, green: 0.27, blue: 0.02, alpha: 1) }
+        case .pink: NSColor(name: "appAccentPinkFill") { $0.isDark ? .init(srgbRed: 0.88, green: 0.34, blue: 0.58, alpha: 1) : .init(srgbRed: 0.67, green: 0.16, blue: 0.39, alpha: 1) }
+        }
+    }
+
+    fileprivate var labelColor: NSColor {
+        switch self {
+        case .blue: NSColor(name: "appAccentBlueLabel") { $0.isDark ? .init(srgbRed: 0.45, green: 0.68, blue: 1.00, alpha: 1) : .init(srgbRed: 0.05, green: 0.24, blue: 0.54, alpha: 1) }
+        case .teal: NSColor(name: "appAccentTealLabel") { $0.isDark ? .init(srgbRed: 0.35, green: 0.82, blue: 0.83, alpha: 1) : .init(srgbRed: 0.00, green: 0.35, blue: 0.38, alpha: 1) }
+        case .green: NSColor(name: "appAccentGreenLabel") { $0.isDark ? .init(srgbRed: 0.45, green: 0.82, blue: 0.52, alpha: 1) : .init(srgbRed: 0.06, green: 0.38, blue: 0.15, alpha: 1) }
+        case .purple: NSColor(name: "appAccentPurpleLabel") { $0.isDark ? .init(srgbRed: 0.75, green: 0.62, blue: 1.00, alpha: 1) : .init(srgbRed: 0.34, green: 0.16, blue: 0.58, alpha: 1) }
+        case .orange: NSColor(name: "appAccentOrangeLabel") { $0.isDark ? .init(srgbRed: 1.00, green: 0.64, blue: 0.32, alpha: 1) : .init(srgbRed: 0.61, green: 0.22, blue: 0.00, alpha: 1) }
+        case .pink: NSColor(name: "appAccentPinkLabel") { $0.isDark ? .init(srgbRed: 1.00, green: 0.60, blue: 0.76, alpha: 1) : .init(srgbRed: 0.61, green: 0.12, blue: 0.34, alpha: 1) }
+        }
     }
 }
 
@@ -34,9 +58,9 @@ private extension NSAppearance {
 extension Color {
     /// Fill colour — use with `.tint`, never as `foregroundStyle` on a plain
     /// background, where it is too dark to read in dark mode.
-    static let snuBlue = Color(nsColor: .snuBlueFill)
+    static var snuBlue: Color { Color(nsColor: .snuBlueFill) }
     /// Foreground colour for coloured text and icons.
-    static let snuBlueLabel = Color(nsColor: .snuBlueLabel)
+    static var snuBlueLabel: Color { Color(nsColor: .snuBlueLabel) }
 }
 
 // MARK: - 간격과 모서리
@@ -156,28 +180,64 @@ extension AnyTransition {
 /// than as a white blob. It is decorative and never interactive.
 struct CrestWatermark: View {
     @Environment(\.colorScheme) private var colorScheme
+    @ObservedObject var appearance = AppearanceModel.shared
 
     /// Loaded once. The file is 1280 points square, so decoding it per redraw
     /// would be a real cost on a screen that repaints while a job runs.
-    private static let image: NSImage? = {
-        guard let url = Bundle.module.url(forResource: "SeoulCrestWatermark", withExtension: "png") else { return nil }
-        return NSImage(contentsOf: url)
+    private static let bundledImages: [WatermarkPreferences.Mode: NSImage] = {
+        var result: [WatermarkPreferences.Mode: NSImage] = [:]
+        for mode in WatermarkPreferences.Mode.allCases {
+            guard let name = mode.bundledResource,
+                  let url = Bundle.module.url(forResource: name, withExtension: "png"),
+                  let image = NSImage(contentsOf: url) else { continue }
+            // The public MIT Brand Guide preview is an RGBA thumbnail with an
+            // opaque pale canvas rather than a transparent download (the latter
+            // requires an MIT login). Turn only its dark official mark into the
+            // template mask so a watermark never paints a faint rectangle.
+            result[mode] = mode == .mit ? darkInkTemplate(image) ?? image : image
+        }
+        return result
     }()
 
+    private static func darkInkTemplate(_ image: NSImage) -> NSImage? {
+        guard let data = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: data),
+              let source = bitmap.cgImage else { return nil }
+        // The preview includes the Brand Guide's generous demonstration canvas.
+        // Crop that canvas, not the mark, so the configured width means roughly
+        // the same visual size as the SNU and KAIST choices.
+        let width = CGFloat(source.width), height = CGFloat(source.height)
+        let crop = CGRect(x: width * 0.28, y: height * 0.28, width: width * 0.48, height: height * 0.44)
+        guard let cropped = source.cropping(to: crop) else { return nil }
+        let input = CIImage(cgImage: cropped)
+        let mask = input
+            .applyingFilter("CIColorInvert")
+            .applyingFilter("CIColorThreshold", parameters: ["inputThreshold": 0.5])
+            .applyingFilter("CIMaskToAlpha")
+        guard let output = CIContext(options: [.cacheIntermediates: false]).createCGImage(mask, from: mask.extent) else { return nil }
+        return NSImage(cgImage: output, size: image.size)
+    }
+
     var body: some View {
-        if let image = Self.image {
+        let preferences = appearance.preferences
+        let image = preferences.mode == .custom
+            ? appearance.customImage ?? Self.bundledImages[.crest]
+            : Self.bundledImages[preferences.mode]
+        if preferences.mode != .none, let image {
             Image(nsImage: image)
                 .resizable()
-                .renderingMode(.template)
+                .renderingMode(preferences.mode.isInstitutional || preferences.monochrome ? .template : .original)
                 .scaledToFit()
-                .frame(width: 520)
-                .foregroundStyle(Color.snuBlueLabel)
+                .frame(maxWidth: min(800, max(180, preferences.width)), maxHeight: min(800, max(180, preferences.width)))
+                .foregroundStyle(appearance.accent.label)
                 // Centred and large, so it reads as a watermark pressed into the
                 // page. Text sits on top of it, so the value has to stay low
                 // enough that a caption over the crest is still comfortable —
                 // a little stronger in dark mode, where the same number all but
                 // disappears.
-                .opacity(colorScheme == .dark ? 0.05 : 0.032)
+                .opacity(min(0.3, max(0.01, preferences.opacity)) * (colorScheme == .dark ? 1.25 : 0.8))
+                .padding(24)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: preferences.position.alignment)
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
         }

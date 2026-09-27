@@ -6,7 +6,7 @@ import Testing
 ///
 /// 이 앱의 기본 전제는 "본문이 이 Mac을 떠나지 않는다"이다. 그 전제가 설정 하나로
 /// 깨질 수 있게 된 이상, **기본값이 여전히 로컬이라는 것**은 테스트로 붙들어 둔다.
-@Suite("판단 위치")
+@Suite("판단 위치", .serialized)
 struct InferenceBackendTests {
     /// 테스트끼리 UserDefaults를 물려받지 않도록 쓰고 나면 지운다.
     private func withDefaults(_ values: [String: Any], _ body: () throws -> Void) rethrows {

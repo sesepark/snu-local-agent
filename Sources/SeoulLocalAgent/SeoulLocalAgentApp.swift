@@ -45,17 +45,55 @@ struct SeoulLocalAgentApp: App {
                     for row in found.upcoming.prefix(8) {
                         let due = row.assignment.dueAt.map(ETLSource.dueText) ?? "마감 미정"
                         let days = row.assignment.dueAt.map { "D-\(ETLDigestStore.daysUntil($0, from: Date()))" } ?? ""
-                        print("     · [\(row.course.shortName)] \(row.assignment.name) — \(due) \(days)")
+                        let late = row.assignment.lateWindow.map { " (지각 제출 \(ETLSource.dueText($0))까지)" } ?? ""
+                        print("     · [\(row.course.shortName)] \(row.assignment.name) — \(due) \(days)\(late)")
                     }
-                    // 실제로 수집하면 무엇이 브리핑에 올라가는지까지 보여 준다. `persists: false`라
-                    // 기준선도 알림 단계도 쓰지 않으므로, 확인했다는 이유로 다음 브리핑이
-                    // 달라지지 않는다.
-                    let harvest = await ETLSource().collect(persists: false)
+                    print("   마감 지난 미제출 \(found.missing.count)건")
+                    for row in found.missing.prefix(5) {
+                        let due = row.dueAt.map(ETLSource.dueText) ?? "마감 미정"
+                        print("     · \(row.name) — \(due)")
+                    }
+                    let unread = found.conversations.filter(\.isUnread).count
+                    print("   쪽지(최근 14일) \(found.conversations.count)건, 안 읽음 \(unread)건")
+                    for row in found.conversations.prefix(5) {
+                        print("     · [\(row.contextName ?? "쪽지")] \(row.shortSubject.prefix(50))")
+                    }
+                    print("   앞으로의 수업 일정 \(found.events.count)건")
+                    for row in found.events.prefix(5) {
+                        let start = row.startAt.map(ETLSource.dueText) ?? "시각 미정"
+                        print("     · [\(row.contextName ?? "eTL")] \(row.title.prefix(40)) — \(start)")
+                    }
+                    // 실제로 수집하면 무엇이 브리핑에 올라가고 달력에 무엇이 놓이는지까지
+                    // 보여 준다. 기억과 스냅샷을 임시 폴더로 돌려 두었으므로 진짜 수집 경로를
+                    // 그대로 타면서도 기준선·알림 단계·달력 파일 어느 것도 건드리지 않는다 —
+                    // 확인했다는 이유로 다음 브리핑이 달라지지 않아야 한다.
+                    let scratch = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+                        .appending(path: "etl-check-\(UUID().uuidString)", directoryHint: .isDirectory)
+                    try? FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+                    var probe = ETLSource()
+                    probe.storeURL = scratch.appending(path: "etl-seen.json")
+                    probe.snapshotURL = scratch.appending(path: "etl-deadlines.json")
+                    // 진짜 기억을 **복사해서** 쓴다. 빈 폴더로 두면 이 실행이 첫 수집이 되어
+                    // 공지도 쪽지도 기준선에 걸려 하나도 안 올라오고, 확인 화면이 "0건"이라고
+                    // 거짓말을 한다. 사본이므로 진짜 파일은 그대로다.
+                    try? FileManager.default.copyItem(at: ETLDigestStore.url, to: probe.storeURL)
+                    let harvest = await probe.collect(persists: true)
                     print("   지금 수집하면 올라갈 항목 \(harvest.items.count)건")
                     for item in harvest.items.prefix(8) {
                         print("     · [\(item.account)] \(item.subject)")
                     }
+                    let snapshot = ETLDeadlineSnapshot.load(url: probe.snapshotURL)
+                    let open = snapshot.entries.filter { $0.kind == .assignment && !$0.isSettled }
+                    let settled = snapshot.entries.filter(\.isSettled).count
+                    print("   달력이 그릴 것 \(snapshot.dated.count)건 (남은 과제 \(open.count) · 제출·면제로 접힐 것 \(settled) · 수업 일정 \(snapshot.entries.filter { $0.kind == .event }.count))")
+                    for row in snapshot.dated.prefix(6) {
+                        let when = row.date.map(ETLSource.dueText) ?? "날짜 미정"
+                        print("     · [\(row.courseName)] \(row.title.prefix(36)) — \(when)\(row.isSettled ? " · 접힘" : "")")
+                    }
                     for warning in harvest.warnings { print("   ⚠︎ \(warning)") }
+                    // `defer`로 지울 수 없다. 이 블록은 `exit`로 끝나고, `exit`는 defer를
+                    // 돌리지 않은 채 프로세스를 세운다 — 그러면 확인할 때마다 임시 폴더가 쌓인다.
+                    try? FileManager.default.removeItem(at: scratch)
                 } catch {
                     print("❌ eTL 실패: \(error.localizedDescription)")
                 }
@@ -341,6 +379,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
 @MainActor
 final class AutomationController: ObservableObject {
+    let connectionHealth = ConnectionHealthModel()
     /// Lives here rather than in the split view so the ⌘1…⌘6 menu commands can
     /// move the selection; menu commands are outside the window's view tree.
     ///
@@ -2551,6 +2590,7 @@ struct MenuContentView: View {
 
 private struct MainWorkspaceView: View {
     @ObservedObject var controller: AutomationController
+    @ObservedObject private var appearance = AppearanceModel.shared
 
     var body: some View {
         NavigationSplitView {
@@ -2560,7 +2600,12 @@ private struct MainWorkspaceView: View {
                 ForEach(AppSection.Group.allCases) { group in
                     Section(group.rawValue) {
                         ForEach(group.members) { item in
-                            Label(item.title, systemImage: item.symbol).tag(item)
+                            Label {
+                                Text(item.title)
+                            } icon: {
+                                Image(systemName: item.symbol).foregroundStyle(appearance.accent.label)
+                            }
+                            .tag(item)
                         }
                     }
                 }
@@ -2600,6 +2645,7 @@ private struct MainWorkspaceView: View {
         // 녹음·전사 alone, so picking that one tab raised the whole window's
         // minimum while every other tab had none at all.
         .frame(minWidth: 940, minHeight: 620)
+        .tint(appearance.accent.color)
     }
 }
 
@@ -3224,8 +3270,36 @@ private struct BriefingStatusRow: View {
 
 /// Which pane ⌘, opens on, so a button elsewhere can send the reader somewhere
 /// specific rather than to wherever they were last.
-enum SettingsTab: String, Hashable {
-    case briefing, connections, classification, transcription, dictation, tools, music, printer
+enum SettingsTab: String, Hashable, CaseIterable {
+    case briefing, connections, classification, transcription, dictation, tools, music, printer, appearance
+
+    var title: String {
+        switch self {
+        case .briefing: "브리핑"
+        case .connections: "연결 상태"
+        case .classification: "분류 기준"
+        case .transcription: "전사 / AI 요약"
+        case .dictation: "받아쓰기"
+        case .tools: "도구"
+        case .music: "음악"
+        case .printer: "프린터"
+        case .appearance: "모양"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .briefing: "tray.full"
+        case .connections: "stethoscope"
+        case .classification: "line.3.horizontal.decrease.circle"
+        case .transcription: "waveform"
+        case .dictation: "mic"
+        case .tools: "wand.and.stars"
+        case .music: "music.note"
+        case .printer: "printer"
+        case .appearance: "paintpalette"
+        }
+    }
 }
 
 /// The ⌘, window. These nine sections used to be one `Form` inside a sidebar
@@ -3234,39 +3308,39 @@ enum SettingsTab: String, Hashable {
 /// hunting for it.
 private struct SettingsWindow: View {
     @ObservedObject var controller: AutomationController
+    @ObservedObject private var appearance = AppearanceModel.shared
 
     var body: some View {
         // Bound, not free: a button that says 연결 상태 점검 has to land on that
         // tab. `openSettings()` alone reopens whichever tab was left showing, so
         // the promise the button makes was one it could not keep.
-        TabView(selection: $controller.settingsTab) {
-            Tab("브리핑", systemImage: "tray.full", value: SettingsTab.briefing) {
-                BriefingSettingsTab(controller: controller)
+        NavigationSplitView {
+            List(SettingsTab.allCases, id: \.self, selection: $controller.settingsTab) { tab in
+                Label {
+                    Text(tab.title)
+                } icon: {
+                    Image(systemName: tab.symbol).foregroundStyle(appearance.accent.label)
+                }
+                .tag(tab)
             }
-            Tab("연결 상태", systemImage: "stethoscope", value: SettingsTab.connections) {
-                ConnectionSettingsTab(controller: controller)
-            }
-            Tab("분류 기준", systemImage: "line.3.horizontal.decrease.circle", value: SettingsTab.classification) {
-                ClassificationSettingsTab(controller: controller)
-            }
-            Tab("전사", systemImage: "waveform", value: SettingsTab.transcription) {
-                TranscriptionSettingsTab(controller: controller)
-            }
-            Tab("받아쓰기", systemImage: "mic", value: SettingsTab.dictation) {
-                Form { DictationSettingsSection(dictation: controller.dictation) }
-                    .formStyle(.grouped)
-            }
-            Tab("도구", systemImage: "wand.and.stars", value: SettingsTab.tools) {
-                ToolSettingsTab(controller: controller)
-            }
-            Tab("음악", systemImage: "music.note", value: SettingsTab.music) {
-                MusicSettingsTab(model: controller.music)
-            }
-            Tab("프린터", systemImage: "printer", value: SettingsTab.printer) {
-                PrintSettingsTab(model: controller.printing)
-            }
+            .navigationSplitViewColumnWidth(min: 170, ideal: 185, max: 220)
+        } detail: {
+            Group {
+                switch controller.settingsTab {
+                case .briefing: BriefingSettingsTab(controller: controller)
+                case .connections: ConnectionSettingsTab(controller: controller, model: controller.connectionHealth)
+                case .classification: ClassificationSettingsTab(controller: controller)
+                case .transcription: TranscriptionSettingsTab(controller: controller)
+                case .dictation: Form { DictationSettingsSection(dictation: controller.dictation) }.formStyle(.grouped)
+                case .tools: ToolSettingsTab(controller: controller)
+                case .music: MusicSettingsTab(model: controller.music)
+                case .printer: PrintSettingsTab(model: controller.printing)
+                case .appearance: AppearanceSettingsView()
+                }
+            }.navigationTitle(controller.settingsTab.title)
         }
-        .frame(width: 620, height: 520)
+        .frame(minWidth: 780, idealWidth: 850, minHeight: 580, idealHeight: 640)
+        .tint(appearance.accent.color)
     }
 }
 
@@ -3536,7 +3610,7 @@ private struct AddWebNoticeSiteSheet: View {
 /// neither should happen merely because a settings window was opened.
 private struct ConnectionSettingsTab: View {
     @ObservedObject var controller: AutomationController
-    @StateObject private var model = ConnectionHealthModel()
+    @ObservedObject var model: ConnectionHealthModel
 
     var body: some View {
         Form {
@@ -3600,6 +3674,7 @@ private struct ConnectionSettingsTab: View {
         }
         .formStyle(.grouped)
         .animation(.appContent, value: model.checks.map(\.state.rawValue))
+        .onAppear { model.checkOnPaneEntry() }
     }
 
     private func apply(_ remedy: ConnectionCheck.Remedy) {

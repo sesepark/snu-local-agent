@@ -34,11 +34,12 @@ DMG="$PROJECT_DIR/dist/SeoulLocalAgent.dmg"
    그래도 열리지 않으면 터미널에서:
    xattr -dr com.apple.quarantine /Applications/SeoulLocalAgent.app
 
-3. 브리핑을 쓰려면 Ollama가 필요합니다.
+3. 브리핑의 기본값은 로컬 Ollama입니다.
    brew install ollama && ollama serve
 
-   앱의 설정 › 연결 상태를 열면 이 Mac에 맞는 모델 이름과
-   받는 명령이 그대로 적혀 있습니다.
+   메모리가 작은 Mac이라면 설정 › 브리핑 › 판단 위치에서
+   OpenAI 호환 API를 선택할 수 있습니다. API 이용권은
+   ChatGPT Edu 계정과 별개일 수 있습니다.
 
 4. 전사·누끼·소리 다듬기·정밀 문서 인식은 파이썬 환경이 필요합니다.
    쓰고 싶은 것만 준비하면 되고, 앱 안에 설치 스크립트가 들어 있습니다.
@@ -50,7 +51,7 @@ DMG="$PROJECT_DIR/dist/SeoulLocalAgent.dmg"
    /Applications/SeoulLocalAgent.app/Contents/Resources/scripts/setup-docparse-env.sh
 
    하나도 실행하지 않아도 문서 인식(빠름) · 스캔 보정 · PDF 편집 ·
-   용량 줄이기 · 형식 변환 · 브리핑은 그대로 됩니다.
+   용량 줄이기 · 형식 변환은 그대로 됩니다.
 
 전체 안내: https://github.com/sesepark/snu-local-agent
 TXT
